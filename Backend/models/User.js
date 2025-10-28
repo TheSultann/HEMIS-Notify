@@ -6,7 +6,11 @@ const UserSchema = new mongoose.Schema({
     email: { type: String, required: true, unique: true },
     passwordHash: { type: String, required: true },
     role: { type: String, enum: ['student', 'teacher'], required: true },
-    group: { type: String } // Только для студентов
+    group: { type: String },
+    hemisToken: { type: String },
+    hemisLogin: { type: String },
+    hemisPassword: { type: String },
+    telegramChatId: { type: String, unique: true, sparse: true } 
 }, { timestamps: true });
 
 // Хэширование пароля перед сохранением

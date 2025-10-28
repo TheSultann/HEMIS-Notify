@@ -2,26 +2,22 @@ const express = require('express');
 const dotenv = require('dotenv');
 const cors = require('cors');
 const connectDB = require('./config/db');
+const botRoutes = require('./routes/bot');  
 
-// Загрузка переменных окружения
 dotenv.config();
-
-// Подключение к БД
 connectDB();
 
 const app = express();
 
-// Middleware
 app.use(cors()); // Разрешить CORS для всех источников (для разработки)
-app.use(express.json()); // Для парсинга application/json
+app.use(express.json());
 
-// Роуты
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/subjects', require('./routes/subjects'));
-app.use('/api/grades', require('./routes/grades'));
+app.use('/api/grades', require('./routes/materials'));
 app.use('/api/schedule', require('./routes/schedule'));
-
+app.use('/api/bot', botRoutes);
 
 app.get('/', (req, res) => {
     res.send('Mini-Hemis API is running...');
