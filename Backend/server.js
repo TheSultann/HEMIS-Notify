@@ -1,3 +1,5 @@
+// Backend/server.js
+
 const express = require('express');
 const dotenv = require('dotenv');
 const cors = require('cors');
@@ -9,13 +11,15 @@ connectDB();
 
 const app = express();
 
-app.use(cors()); // Разрешить CORS для всех источников (для разработки)
+app.use(cors());
 app.use(express.json());
 
-app.use('/api/auth', require('./routes/auth'));
-app.use('/api/users', require('./routes/users'));
-app.use('/api/subjects', require('./routes/subjects'));
-app.use('/api/grades', require('./routes/materials'));
+// УДАЛЯЕМ ВСЕ ЛИШНИЕ РОУТЫ
+// app.use('/api/auth', require('./routes/auth'));
+// app.use('/api/users', require('./routes/users'));
+// ... и так далее
+
+// ОСТАВЛЯЕМ ТОЛЬКО НУЖНЫЕ
 app.use('/api/schedule', require('./routes/schedule'));
 app.use('/api/bot', botRoutes);
 
@@ -23,5 +27,7 @@ app.get('/', (req, res) => {
     res.send('Mini-Hemis API is running...');
 });
 
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+// const PORT = process.env.PORT || 5000;
+// app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+module.exports = app;

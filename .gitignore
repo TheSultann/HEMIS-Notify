@@ -1,0 +1,22 @@
+# Файлы с секретными данными (САМОЕ ВАЖНОЕ!)
+.env
+Backend/.env
+TelegramBot/.env
+
+# Папки с зависимостями
+node_modules/
+Backend/node_modules/
+TelegramBot/node_modules/
+
+# Файлы IDE (например, WebStorm, VSCode)
+.idea/
+.vscode/
+*.iml
+
+# Логи
+*.log
+npm-debug.log*
+
+# Системные файлы macOS и Windows
+.DS_Store
+Thumbs.db

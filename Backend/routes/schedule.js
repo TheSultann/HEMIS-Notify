@@ -1,68 +1,68 @@
+// Backend/routes/schedule.js
+
 const express = require('express');
 const router = express.Router();
-const User = require('../models/User');
-const { protect } = require('../middleware/authMiddleware');
+// const User = require('../models/User'); // User больше не нужен в этом файле
 
-// Функция для авторизации в HEMIS API
-async function loginToHemis(hemisLogin, hemisPassword, userId) {
-    const endpoint = "/v1/auth/login";
-    const url = `${process.env.HEMIS_API_BASE}${endpoint}`;
-    if (!hemisLogin || !hemisPassword) {
-        console.log('HEMIS login or password missing');
-        return null;
-    }
-    const loginData = { login: hemisLogin, password: hemisPassword };
-
+// НОВАЯ УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ЛОГИНА
+async function performHemisLogin(hemisLogin, hemisPassword) {
     try {
-        const response = await fetch(url, {
+        const loginResponse = await fetch(`${process.env.HEMIS_API_BASE}/v1/auth/login`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'Origin': 'https://student.urdu.uz' },
-            body: JSON.stringify(loginData)
+            body: JSON.stringify({ login: hemisLogin, password: hemisPassword })
         });
-        console.log('HEMIS Login API Response Status:', response.status);
-        const data = await response.json();
-        if (!data.success || !data.data?.token) {
-            console.log('Failed to get HEMIS token:', data);
+        const loginData = await loginResponse.json();
+        if (!loginData.success || !loginData.data?.token) {
+            console.log('HEMIS Login failed:', loginData);
             return null;
         }
-        const token = data.data.token;
-        console.log('New HEMIS token received.');
-        await User.findByIdAndUpdate(userId, { hemisToken: token });
-        console.log('HEMIS token saved for user:', userId);
-        return token;
+        const token = loginData.data.token;
+
+        const profileResponse = await fetch(`${process.env.HEMIS_API_BASE}/v1/account/me`, {
+            headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json', 'Origin': 'https://student.urdu.uz' }
+        });
+        const profileData = await profileResponse.json();
+        if (!profileData.success) {
+            console.log('HEMIS Get Profile failed:', profileData);
+            return null;
+        }
+        
+        return {
+            token,
+            profileData: {
+                fullName: profileData.data?.full_name,
+                isStudent: !!profileData.data?.student_id_number,
+                groupName: profileData.data?.group?.name
+            }
+        };
     } catch (error) {
-        console.error('Login to HEMIS failed:', error);
+        console.error('performHemisLogin error:', error);
         return null;
     }
 }
 
-// Получение текущего семестра студента
+// ВОССТАНОВЛЕННАЯ ФУНКЦИЯ: Получение текущего семестра
 async function getCurrentSemester(hemisToken) {
     const endpoint = '/v1/account/me';
     const url = `${process.env.HEMIS_API_BASE}${endpoint}`;
-    console.log('Attempting to fetch current semester...');
-
+    
     try {
         const response = await fetch(url, {
             method: 'GET',
             headers: { 'Authorization': `Bearer ${hemisToken}`, 'Accept': 'application/json', 'Origin': 'https://student.urdu.uz' }
         });
 
-        console.log(`Account Info API Response Status:`, response.status);
         if (response.status !== 200) {
             return null;
         }
 
         const data = await response.json();
-        
-        // ИСПРАВЛЕНО: Убран лишний ключ 'student' из пути
         const semesterCode = data?.data?.semester?.code;
 
         if (semesterCode) {
-            console.log(`Successfully fetched current semester code: ${semesterCode}`);
             return semesterCode;
         } else {
-            console.error('Could not find semester code in user profile data:', data);
             return null;
         }
     } catch (error) {
@@ -71,8 +71,7 @@ async function getCurrentSemester(hemisToken) {
     }
 }
 
-
-// Функция для получения расписания
+// ВОССТАНОВЛЕННАЯ ФУНКЦИЯ: Получение расписания
 async function getScheduleFromHemis(hemisToken, user, semesterCode) {
     const endpoint = `/v1/education/schedule?semester=${semesterCode}`;
     const url = `${process.env.HEMIS_API_BASE}${endpoint}`;
@@ -83,22 +82,16 @@ async function getScheduleFromHemis(hemisToken, user, semesterCode) {
             headers: { 'Authorization': `Bearer ${hemisToken}`, 'Accept': 'application/json', 'Origin': 'https://student.urdu.uz' }
         });
 
-        console.log(`Trying Schedule Endpoint: ${endpoint}, Response Status:`, response.status);
         const data = await response.json();
 
         if (response.status === 401) {
             return { error: 'unauthorized' };
         }
         if (!data.success || !data.data) {
-            console.log(`Failed to get schedule from Endpoint:`, data);
             return null;
         }
         
         const scheduleData = data.data;
-        if (scheduleData.length === 0) {
-            console.log(`No schedule items found for semester ${semesterCode}. The data array is empty.`);
-        }
-
         const uniqueScheduleItems = [];
         const seen = new Set();
         scheduleData.forEach(item => {
@@ -112,8 +105,10 @@ async function getScheduleFromHemis(hemisToken, user, semesterCode) {
                     dayOfWeek, time,
                     subjectId: {
                         name: item.subject?.name || 'Unknown Subject',
-                        teacherId: { name: item.employee?.name || 'Unknown Teacher' },
-                        group: user.role === 'student' ? user.group : item.group?.name || 'Unknown Group'
+                        teacherName: item.employee?.name || 'N/A',
+                        groupName: item.group?.name || 'N/A',
+                        auditoriumName: item.auditorium?.name || 'N/A',
+                        lessonType: item.trainingType?.name || ''
                     }
                 });
             }
@@ -125,55 +120,11 @@ async function getScheduleFromHemis(hemisToken, user, semesterCode) {
     }
 }
 
-// GET /api/schedule
-router.get('/', protect, async (req, res) => {
-    try {
-        let hemisToken = req.user.hemisToken;
-
-        if (!hemisToken) {
-            console.log('HEMIS token not found, authenticating...');
-            hemisToken = await loginToHemis(req.user.hemisLogin, req.user.hemisPassword, req.user._id);
-            if (!hemisToken) return res.status(401).json({ message: 'Failed to authenticate with HEMIS API.' });
-        }
-
-        let semesterCode = await getCurrentSemester(hemisToken);
-        if (!semesterCode) {
-            console.log('Could not get semester, re-authenticating to get a fresh token...');
-            hemisToken = await loginToHemis(req.user.hemisLogin, req.user.hemisPassword, req.user._id);
-            if (!hemisToken) return res.status(401).json({ message: 'Failed to re-authenticate with HEMIS API.' });
-            
-            semesterCode = await getCurrentSemester(hemisToken);
-            if (!semesterCode) {
-                return res.status(400).json({ message: 'Could not determine current semester from HEMIS API.' });
-            }
-        }
-
-        let scheduleResult = await getScheduleFromHemis(hemisToken, req.user, semesterCode);
-
-        if (scheduleResult?.error === 'unauthorized') {
-            console.log('Token was invalid for schedule, re-authenticating one last time...');
-            hemisToken = await loginToHemis(req.user.hemisLogin, req.user.hemisPassword, req.user._id);
-            if (!hemisToken) return res.status(401).json({ message: 'Failed to re-authenticate with HEMIS API.' });
-
-            scheduleResult = await getScheduleFromHemis(hemisToken, req.user, semesterCode);
-        }
-
-        if (scheduleResult === null || scheduleResult?.error) {
-            return res.status(400).json({ message: 'Failed to fetch schedule from HEMIS API after all attempts.' });
-        }
-
-        res.json(scheduleResult);
-    } catch (error) {
-        console.error('Schedule fetch route error:', error);
-        res.status(500).json({ message: 'Server error', error: error.message });
-    }
-});
-
+// Прикрепляем сервисные функции для использования в bot.js
 router.scheduleService = {
-    loginToHemis,
+    performHemisLogin,
     getCurrentSemester,
     getScheduleFromHemis
 };
-
 
 module.exports = router;
