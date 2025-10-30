@@ -2,9 +2,7 @@
 
 const express = require('express');
 const router = express.Router();
-// const User = require('../models/User'); // User больше не нужен в этом файле
 
-// НОВАЯ УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ЛОГИНА
 async function performHemisLogin(hemisLogin, hemisPassword) {
     try {
         const loginResponse = await fetch(`${process.env.HEMIS_API_BASE}/v1/auth/login`, {
@@ -28,12 +26,14 @@ async function performHemisLogin(hemisLogin, hemisPassword) {
             return null;
         }
         
+        // ИЗМЕНЕНО: Безопасное получение имени группы с помощью optional chaining (?.),
+        // чтобы избежать ошибки, если у пользователя нет информации о группе.
         return {
             token,
             profileData: {
                 fullName: profileData.data?.full_name,
                 isStudent: !!profileData.data?.student_id_number,
-                groupName: profileData.data?.group?.name
+                groupName: profileData.data?.group?.name || null // Если группы нет, будет null
             }
         };
     } catch (error) {
@@ -42,7 +42,6 @@ async function performHemisLogin(hemisLogin, hemisPassword) {
     }
 }
 
-// ВОССТАНОВЛЕННАЯ ФУНКЦИЯ: Получение текущего семестра
 async function getCurrentSemester(hemisToken) {
     const endpoint = '/v1/account/me';
     const url = `${process.env.HEMIS_API_BASE}${endpoint}`;
@@ -52,26 +51,17 @@ async function getCurrentSemester(hemisToken) {
             method: 'GET',
             headers: { 'Authorization': `Bearer ${hemisToken}`, 'Accept': 'application/json', 'Origin': 'https://student.urdu.uz' }
         });
-
-        if (response.status !== 200) {
-            return null;
-        }
-
+        if (response.status !== 200) return null;
         const data = await response.json();
         const semesterCode = data?.data?.semester?.code;
-
-        if (semesterCode) {
-            return semesterCode;
-        } else {
-            return null;
-        }
+        if (semesterCode) return semesterCode;
+        return null;
     } catch (error) {
         console.error('Failed to fetch user profile data:', error);
         return null;
     }
 }
 
-// ВОССТАНОВЛЕННАЯ ФУНКЦИЯ: Получение расписания
 async function getScheduleFromHemis(hemisToken, user, semesterCode) {
     const endpoint = `/v1/education/schedule?semester=${semesterCode}`;
     const url = `${process.env.HEMIS_API_BASE}${endpoint}`;
@@ -81,46 +71,32 @@ async function getScheduleFromHemis(hemisToken, user, semesterCode) {
             method: 'GET',
             headers: { 'Authorization': `Bearer ${hemisToken}`, 'Accept': 'application/json', 'Origin': 'https://student.urdu.uz' }
         });
-
+        
+        console.log(`Trying Schedule Endpoint: ${endpoint}, Response Status:`, response.status);
         const data = await response.json();
 
-        if (response.status === 401) {
-            return { error: 'unauthorized' };
-        }
-        if (!data.success || !data.data) {
-            return null;
-        }
+        if (response.status === 401) return { error: 'unauthorized' };
+        if (!data.success || !data.data) return null;
         
-        const scheduleData = data.data;
-        const uniqueScheduleItems = [];
-        const seen = new Set();
-        scheduleData.forEach(item => {
-            const lessonDate = new Date(item.lesson_date * 1000);
-            const dayOfWeek = lessonDate.getDay() || 7;
-            const time = item.lessonPair?.start_time || 'Unknown';
-            const key = `${dayOfWeek}-${time}`;
-            if (!seen.has(key)) {
-                seen.add(key);
-                uniqueScheduleItems.push({
-                    dayOfWeek, time,
-                    subjectId: {
-                        name: item.subject?.name || 'Unknown Subject',
-                        teacherName: item.employee?.name || 'N/A',
-                        groupName: item.group?.name || 'N/A',
-                        auditoriumName: item.auditorium?.name || 'N/A',
-                        lessonType: item.trainingType?.name || ''
-                    }
-                });
+        const scheduleData = data.data.map(item => ({
+            lesson_date: item.lesson_date, 
+            time: item.lessonPair?.start_time || 'Unknown',
+            subjectId: {
+                name: item.subject?.name || 'Unknown Subject',
+                teacherName: item.employee?.name || 'N/A',
+                groupName: item.group?.name || 'N/A',
+                auditoriumName: item.auditorium?.name || 'N/A',
+                lessonType: item.trainingType?.name || ''
             }
-        });
-        return uniqueScheduleItems;
+        }));
+        
+        return scheduleData;
     } catch (error) {
         console.error(`Failed to get schedule from Endpoint:`, error);
         return null;
     }
 }
 
-// Прикрепляем сервисные функции для использования в bot.js
 router.scheduleService = {
     performHemisLogin,
     getCurrentSemester,

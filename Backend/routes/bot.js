@@ -3,7 +3,6 @@
 const express = require('express');
 const router = express.Router();
 const User = require('../models/User');
-// УБРАЛИ: const { encrypt, decrypt } = require('../utils/crypto');
 const scheduleRouter = require('./schedule');
 const scheduleService = scheduleRouter.scheduleService;
 
@@ -30,15 +29,23 @@ router.post('/register', protectBotRoute, async (req, res) => {
         
         const { token: hemisToken, profileData } = hemisAuthData;
 
-        let user = await User.findOne({ hemisLogin });
+        // ИЗМЕНЕНО: Ищем пользователя по telegramChatId, а не по hemisLogin.
+        // Это позволяет одному и тому же человеку в телеграме переключать аккаунты HEMIS.
+        let user = await User.findOne({ telegramChatId: chatId });
+
         if (user) {
-            user.hemisPassword = hemisPassword; // <-- УПРОЩЕНО
-            user.telegramChatId = chatId;
+            // Если пользователь с таким chatId уже есть, обновляем его данные
+            user.hemisLogin = hemisLogin;
+            user.hemisPassword = hemisPassword;
             user.hemisToken = hemisToken;
+            user.fullName = profileData.fullName;
+            user.role = profileData.isStudent ? 'student' : 'teacher';
+            user.group = profileData.groupName;
         } else {
+            // Если пользователя нет, создаем нового
             user = new User({
                 hemisLogin,
-                hemisPassword: hemisPassword, // <-- УПРОЩЕНО
+                hemisPassword: hemisPassword,
                 telegramChatId: chatId,
                 hemisToken,
                 fullName: profileData.fullName,
@@ -51,6 +58,11 @@ router.post('/register', protectBotRoute, async (req, res) => {
         res.status(200).json({ success: true, message: `Welcome, ${profileData.fullName}! Account linked successfully.` });
 
     } catch (error) {
+        // Добавляем более детальное логирование для будущих ошибок
+        if (error.code === 11000) {
+            console.error('Bot register error: Duplicate key violation.', error.keyValue);
+            return res.status(409).json({ message: 'A user with this login or chat ID might already exist.' });
+        }
         console.error('Bot register error:', error);
         res.status(500).json({ message: 'Server error' });
     }
@@ -72,8 +84,7 @@ router.get('/schedule/:chatId', protectBotRoute, async (req, res) => {
         const user = await User.findOne({ telegramChatId: chatId });
         if (!user) return res.status(404).json({ message: 'User not found' });
 
-        // Пароль теперь используется напрямую, без расшифровки
-        const plainPassword = user.hemisPassword; // <-- УПРОЩЕНО
+        const plainPassword = user.hemisPassword;
 
         let hemisToken = user.hemisToken;
         if (!hemisToken) {
@@ -86,14 +97,12 @@ router.get('/schedule/:chatId', protectBotRoute, async (req, res) => {
         
         const semesterCode = await scheduleService.getCurrentSemester(hemisToken);
         if (!semesterCode) {
-            // Если не удалось получить семестр, возможно, токен "умер"
             console.log("Could not get semester, trying to re-login to HEMIS...");
             const authData = await scheduleService.performHemisLogin(user.hemisLogin, plainPassword);
             if (!authData) return res.status(401).json({ message: 'Failed to re-authenticate with HEMIS' });
             hemisToken = authData.token;
             user.hemisToken = hemisToken;
             await user.save();
-            // Повторная попытка получить семестр
             const newSemesterCode = await scheduleService.getCurrentSemester(hemisToken);
             if(!newSemesterCode) return res.status(400).json({ message: 'Could not determine semester even after re-login.' });
             
