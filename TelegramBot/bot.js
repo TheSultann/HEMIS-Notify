@@ -107,8 +107,8 @@ function startBot() {
     }
 
     // --- Планировщики Cron (без изменений) ---
-    cron.schedule('0 11 * * *', () => processAndSendSchedule(new Date(), "Расписание на сегодня"), { scheduled: true, timezone: "Asia/Tashkent" });
-    console.log('Утренний планировщик настроен на 11:00.');
+    cron.schedule('0 7 * * *', () => processAndSendSchedule(new Date(), "Расписание на сегодня"), { scheduled: true, timezone: "Asia/Tashkent" });
+    console.log('Утренний планировщик настроен на 7:00.');
     cron.schedule('0 19 * * *', () => {
         const today = new Date();
         if (today.getDay() === 6) {
