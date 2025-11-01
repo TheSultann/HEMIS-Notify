@@ -215,6 +215,7 @@ function startBot() {
     bot.on('message', async (msg) => {
         const chatId = msg.chat.id;
         const text = msg.text;
+        if (!text) return;      
         if (text.startsWith('/')) return;
         const currentState = userStates[chatId];
         if (!currentState) return;
