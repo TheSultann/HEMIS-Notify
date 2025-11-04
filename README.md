@@ -99,7 +99,7 @@
 
 **Sultanbek Otanazarov**
 
-- GitHub: https://github.com/TheSultann
+- GitHub: [@TheSultann](https://github.com/TheSultann)
 - Telegram: [@S7L5An](https://t.me/S7L5An)
 - Email: otanazarovsultanbek@gmail.com
 
