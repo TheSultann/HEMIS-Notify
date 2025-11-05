@@ -339,7 +339,8 @@ bot.sendMessage(msg.chat.id, helpMessage, { parse_mode: 'HTML' });
     bot.on('message', async (msg) => {
         const chatId = msg.chat.id;
         const text = msg.text;
-        if (msg.chat.type !== 'private') return;
+        
+        if (!text) return;
         if (text.startsWith('/')) return;
         const currentState = userStates[chatId];
         if (!currentState) return;
