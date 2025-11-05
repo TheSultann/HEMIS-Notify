@@ -15,8 +15,6 @@ const protectBotRoute = (req, res, next) => {
     }
 };
 
-// ... (роуты /register, /bind-group, /groups, /subscribers без изменений) ...
-
 router.post('/register', protectBotRoute, async (req, res) => {
     const { hemisLogin, hemisPassword, chatId } = req.body;
     if (!hemisLogin || !hemisPassword || !chatId) {
@@ -73,7 +71,11 @@ router.post('/bind-group', protectBotRoute, async (req, res) => {
     }
 
     try {
-        const studentInGroup = await User.findOne({ group: groupName });
+        // --- ИЗМЕНЕНО: Поиск теперь ищет точное вхождение, игнорируя лишние символы ---
+        const studentInGroup = await User.findOne({ 
+            group: { $regex: groupName, $options: 'i' } 
+        });
+
         if (!studentInGroup) {
             return res.status(404).json({ message: `Сначала хотя бы один студент из группы "${groupName}" должен привязать свой аккаунт к боту.` });
         }
@@ -121,9 +123,12 @@ router.get('/subscribers', protectBotRoute, async (req, res) => {
     }
 });
 
-// --- ОБЩАЯ ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ РАСПИСАНИЯ ГРУППЫ ---
 async function getGroupSchedule(groupName) {
-    const user = await User.findOne({ group: groupName });
+    // --- ИЗМЕНЕНО: Поиск теперь ищет точное вхождение, игнорируя лишние символы ---
+    const user = await User.findOne({ 
+        group: { $regex: groupName, $options: 'i' } 
+    });
+    
     if (!user) {
         throw { status: 404, message: `Не найден зарегистрированный студент для группы ${groupName}.` };
     }
@@ -182,7 +187,6 @@ router.get('/schedule/group/:groupName', protectBotRoute, async (req, res) => {
     }
 });
 
-// --- НОВЫЙ ЭНДПОИНТ: Получение расписания группы по ID чата ---
 router.get('/schedule/group-by-chat-id/:chatId', protectBotRoute, async (req, res) => {
     try {
         const { chatId } = req.params;
@@ -191,7 +195,6 @@ router.get('/schedule/group-by-chat-id/:chatId', protectBotRoute, async (req, re
             return res.status(404).json({ message: 'Этот чат не привязан к академической группе.' });
         }
         const result = await getGroupSchedule(group.groupName);
-        // Добавляем имя группы в ответ, чтобы бот мог его использовать
         res.json({ ...result, groupName: group.groupName });
     } catch (error) {
         console.error(`Get schedule for group chat ${req.params.chatId} error:`, error.message || error);
