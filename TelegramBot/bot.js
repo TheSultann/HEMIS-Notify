@@ -23,12 +23,12 @@ function startBot() {
         { command: '/login', description: '🔄 Сменить аккаунт HEMIS' },
         { command: '/help', description: 'ℹ️ Помощь' }
     ];
-    
+
     const groupCommands = [
         { command: '/start', description: '🚀 Информация о боте' },
         { command: '/schedule_today', description: '📅 Расписание на сегодня' },
         { command: '/schedule_tomorrow', description: '🗓️ Расписание на завтра' },
-        { command: '/bind_group', description: '🔗 Привязать группу (только для админов)'},
+        { command: '/bind_group', description: '🔗 Привязать группу (только для админов)' },
         { command: '/help', description: 'ℹ️ Помощь' }
     ];
 
@@ -59,15 +59,87 @@ function startBot() {
         return message;
     }
 
+    // --- ВОССТАНОВЛЕНА ЛОГИКА: Автоматическая рассылка для пользователей ---
     async function processAndSendSchedule(dateObject, title) {
-        // ... (без изменений)
+        console.log(`[${new Date().toLocaleString()}] Запуск рассылки: "${title}"`);
+        try {
+            const { data: subscribers } = await axios.get(`${apiUrl}/api/bot/subscribers`, {
+                headers: { 'x-bot-secret': botApiSecret }
+            });
+            if (subscribers.length === 0) {
+                console.log("Подписчики не найдены. Рассылка пропущена.");
+                return;
+            }
+            console.log(`Найдено подписчиков: ${subscribers.length}`);
+            for (const subscriber of subscribers) {
+                try {
+                    const { data: scheduleData } = await axios.get(`${apiUrl}/api/bot/schedule/${subscriber.telegramChatId}`, {
+                        headers: { 'x-bot-secret': botApiSecret }
+                    });
+                    const daySchedule = scheduleData.schedule.filter(item => {
+                        const lessonDate = new Date(item.lesson_date * 1000);
+                        return lessonDate.getFullYear() === dateObject.getFullYear() &&
+                            lessonDate.getMonth() === dateObject.getMonth() &&
+                            lessonDate.getDate() === dateObject.getDate();
+                    });
+                    const message = formatSchedule(daySchedule, title, subscriber.role, dateObject);
+                    await bot.sendMessage(subscriber.telegramChatId, message, { parse_mode: 'HTML' });
+                    console.log(`Сообщение "${title}" успешно отправлено пользователю ${subscriber.telegramChatId}`);
+                } catch (error) {
+                    console.error(`Ошибка при обработке пользователя ${subscriber.telegramChatId}:`, error.response?.data?.message || error.message);
+                }
+            }
+            console.log(`Рассылка "${title}" завершена.`);
+        } catch (error) {
+            console.error(`Критическая ошибка при выполнении рассылки "${title}":`, error.message);
+        }
     }
 
+    // --- ВОССТАНОВЛЕНА ЛОГИКА: Автоматическая рассылка для групп с закреплением ---
     async function processAndSendGroupSchedules(dateObject, title) {
-        // ... (без изменений)
+        console.log(`[${new Date().toLocaleString()}] Запуск групповой рассылки: "${title}"`);
+        try {
+            const { data: groups } = await axios.get(`${apiUrl}/api/bot/groups`, {
+                headers: { 'x-bot-secret': botApiSecret }
+            });
+
+            if (!groups || groups.length === 0) {
+                console.log("Привязанные группы не найдены. Групповая рассылка пропущена.");
+                return;
+            }
+
+            console.log(`Найдено привязанных групп: ${groups.length}`);
+            for (const group of groups) {
+                try {
+                    const { data: scheduleData } = await axios.get(`${apiUrl}/api/bot/schedule/group/${encodeURIComponent(group.groupName)}`, {
+                        headers: { 'x-bot-secret': botApiSecret }
+                    });
+
+                    const daySchedule = scheduleData.schedule.filter(item => {
+                        const lessonDate = new Date(item.lesson_date * 1000);
+                        return lessonDate.getFullYear() === dateObject.getFullYear() &&
+                            lessonDate.getMonth() === dateObject.getMonth() &&
+                            lessonDate.getDate() === dateObject.getDate();
+                    });
+
+                    const message = formatSchedule(daySchedule, `Расписание для группы ${group.groupName}`, 'student', dateObject);
+
+                    const sentMessage = await bot.sendMessage(group.telegramChatId, message, { parse_mode: 'HTML' });
+                    await bot.pinChatMessage(sentMessage.chat.id, sentMessage.message_id, { disable_notification: false });
+                    console.log(`Сообщение "${title}" успешно отправлено и закреплено в группе ${group.groupName} (${group.telegramChatId})`);
+
+                } catch (error) {
+                    const errorMessage = error.response?.data?.message || error.message;
+                    console.error(`Ошибка при обработке группы ${group.groupName} (${group.telegramChatId}):`, errorMessage);
+                    await bot.sendMessage(group.telegramChatId, `⚠️ Не удалось получить расписание для группы ${group.groupName}. Ошибка: ${errorMessage}`);
+                }
+            }
+            console.log(`Групповая рассылка "${title}" завершена.`);
+        } catch (error) {
+            console.error(`Критическая ошибка при выполнении групповой рассылки "${title}":`, error.message);
+        }
     }
 
-    // --- ИЗМЕНЕНО: Функция теперь принимает ID сообщения для удаления ---
     async function processAndSendScheduleForUser(chatId, dateObject, title, loadingMessageId) {
         try {
             const { data: scheduleData } = await axios.get(`${apiUrl}/api/bot/schedule/${chatId}`, {
@@ -76,8 +148,8 @@ function startBot() {
             const daySchedule = scheduleData.schedule.filter(item => {
                 const lessonDate = new Date(item.lesson_date * 1000);
                 return lessonDate.getFullYear() === dateObject.getFullYear() &&
-                       lessonDate.getMonth() === dateObject.getMonth() &&
-                       lessonDate.getDate() === dateObject.getDate();
+                    lessonDate.getMonth() === dateObject.getMonth() &&
+                    lessonDate.getDate() === dateObject.getDate();
             });
             const message = formatSchedule(daySchedule, title, scheduleData.role, dateObject);
             await bot.sendMessage(chatId, message, { parse_mode: 'HTML' });
@@ -85,14 +157,12 @@ function startBot() {
             console.error(`Ошибка при отправке для ${chatId}:`, error.message);
             bot.sendMessage(chatId, "Не удалось получить расписание. Возможно, ваш аккаунт еще не привязан. Используйте /login.");
         } finally {
-            // Удаляем сообщение "Загружаю..." в любом случае
             if (loadingMessageId) {
                 bot.deleteMessage(chatId, loadingMessageId).catch(err => console.error("Не удалось удалить сообщение о загрузке:", err.message));
             }
         }
     }
 
-    // --- ИЗМЕНЕНО: Функция теперь принимает ID сообщения для удаления ---
     async function processAndSendScheduleForGroup(chatId, dateObject, title, loadingMessageId) {
         try {
             const { data: scheduleData } = await axios.get(`${apiUrl}/api/bot/schedule/group-by-chat-id/${chatId}`, {
@@ -101,14 +171,12 @@ function startBot() {
             const daySchedule = scheduleData.schedule.filter(item => {
                 const lessonDate = new Date(item.lesson_date * 1000);
                 return lessonDate.getFullYear() === dateObject.getFullYear() &&
-                       lessonDate.getMonth() === dateObject.getMonth() &&
-                       lessonDate.getDate() === dateObject.getDate();
+                    lessonDate.getMonth() === dateObject.getMonth() &&
+                    lessonDate.getDate() === dateObject.getDate();
             });
             const finalTitle = `${title} для группы ${scheduleData.groupName}`;
             const message = formatSchedule(daySchedule, finalTitle, scheduleData.role, dateObject);
-            
             await bot.sendMessage(chatId, message, { parse_mode: 'HTML' });
-
         } catch (error) {
             const errorMessage = error.response?.data?.message || "Произошла ошибка.";
             console.error(`Ошибка при отправке для группы ${chatId}:`, errorMessage);
@@ -118,48 +186,11 @@ function startBot() {
                 bot.sendMessage(chatId, `Не удалось получить расписание для группы. Ошибка: ${errorMessage}`);
             }
         } finally {
-            // Удаляем сообщение "Загружаю..." в любом случае
             if (loadingMessageId) {
                 bot.deleteMessage(chatId, loadingMessageId).catch(err => console.error("Не удалось удалить сообщение о загрузке:", err.message));
             }
         }
     }
-
-    // ... (cron jobs без изменений) ...
-
-    // ... (callback_query handler без изменений) ...
-
-    // ... (/start, /login, /bind_group, /help handlers без изменений) ...
-
-    // --- ИЗМЕНЕНО: Обработчики команд теперь сохраняют ID сообщения "Загружаю..." ---
-    bot.onText(/\/schedule_today/, async (msg) => {
-        const chatId = msg.chat.id;
-        const loadingMessage = await bot.sendMessage(chatId, "Загружаю расписание на сегодня...");
-        
-        if (msg.chat.type === 'private') {
-            processAndSendScheduleForUser(chatId, new Date(), "Расписание на сегодня", loadingMessage.message_id);
-        } else {
-            processAndSendScheduleForGroup(chatId, new Date(), "Расписание на сегодня", loadingMessage.message_id);
-        }
-    });
-
-    bot.onText(/\/schedule_tomorrow/, async (msg) => {
-        const chatId = msg.chat.id;
-        const loadingMessage = await bot.sendMessage(chatId, "Загружаю расписание на завтра...");
-        
-        const tomorrowDate = new Date();
-        tomorrowDate.setDate(tomorrowDate.getDate() + 1);
-        
-        if (msg.chat.type === 'private') {
-            processAndSendScheduleForUser(chatId, tomorrowDate, "Расписание на завтра", loadingMessage.message_id);
-        } else {
-            processAndSendScheduleForGroup(chatId, tomorrowDate, "Расписание на завтра", loadingMessage.message_id);
-        }
-    });
-
-    // ... (message handler для логина без изменений) ...
-
-    // --- Полный код остальных функций для целостности ---
 
     cron.schedule('0 7 * * *', () => {
         const today = new Date();
@@ -181,7 +212,8 @@ function startBot() {
     }, { scheduled: true, timezone: "Asia/Tashkent" });
     console.log('Вечерний планировщик настроен на 19:00 (индивидуальный и групповой).');
 
-    bot.on('callback_query', (callbackQuery) => {
+    // --- ИСПРАВЛЕНО: Логика вынесена из вложенных обработчиков ---
+    bot.on('callback_query', async (callbackQuery) => {
         const msg = callbackQuery.message;
         const data = callbackQuery.data;
         bot.answerCallbackQuery(callbackQuery.id);
@@ -194,31 +226,14 @@ function startBot() {
             bot.sendMessage(msg.chat.id, "Пожалуйста, введите ваш логин от системы HEMIS (обычно это ID студента):");
         }
         if (data === 'schedule_today') {
-            bot.onText(/\/schedule_today/, async (msg) => {
-                const chatId = msg.chat.id;
-                const loadingMessage = await bot.sendMessage(chatId, "Загружаю расписание на сегодня...");
-                
-                if (msg.chat.type === 'private') {
-                    processAndSendScheduleForUser(chatId, new Date(), "Расписание на сегодня", loadingMessage.message_id);
-                } else {
-                    processAndSendScheduleForGroup(chatId, new Date(), "Расписание на сегодня", loadingMessage.message_id);
-                }
-            });
+            const loadingMessage = await bot.sendMessage(msg.chat.id, "Загружаю расписание на сегодня...");
+            processAndSendScheduleForUser(msg.chat.id, new Date(), "Расписание на сегодня", loadingMessage.message_id);
         }
         if (data === 'schedule_tomorrow') {
-            bot.onText(/\/schedule_tomorrow/, async (msg) => {
-                const chatId = msg.chat.id;
-                const loadingMessage = await bot.sendMessage(chatId, "Загружаю расписание на завтра...");
-                
-                const tomorrowDate = new Date();
-                tomorrowDate.setDate(tomorrowDate.getDate() + 1);
-                
-                if (msg.chat.type === 'private') {
-                    processAndSendScheduleForUser(chatId, tomorrowDate, "Расписание на завтра", loadingMessage.message_id);
-                } else {
-                    processAndSendScheduleForGroup(chatId, tomorrowDate, "Расписание на завтра", loadingMessage.message_id);
-                }
-            });
+            const loadingMessage = await bot.sendMessage(msg.chat.id, "Загружаю расписание на завтра...");
+            const tomorrowDate = new Date();
+            tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+            processAndSendScheduleForUser(msg.chat.id, tomorrowDate, "Расписание на завтра", loadingMessage.message_id);
         }
     });
 
@@ -230,7 +245,7 @@ function startBot() {
 
         delete userStates[chatId];
         try {
-            const response = await axios.get(`${apiUrl}/api/bot/schedule/${chatId}`, {
+            await axios.get(`${apiUrl}/api/bot/schedule/${chatId}`, {
                 headers: { 'x-bot-secret': botApiSecret }
             });
             bot.sendMessage(chatId, `👋 С возвращением!`, {
@@ -336,12 +351,39 @@ function startBot() {
 bot.sendMessage(msg.chat.id, helpMessage, { parse_mode: 'HTML' });
     });
 
+
+    bot.onText(/\/schedule_today/, async (msg) => {
+        const chatId = msg.chat.id;
+        const loadingMessage = await bot.sendMessage(chatId, "Загружаю расписание на сегодня...");
+
+        if (msg.chat.type === 'private') {
+            processAndSendScheduleForUser(chatId, new Date(), "Расписание на сегодня", loadingMessage.message_id);
+        } else {
+            processAndSendScheduleForGroup(chatId, new Date(), "Расписание на сегодня", loadingMessage.message_id);
+        }
+    });
+
+    bot.onText(/\/schedule_tomorrow/, async (msg) => {
+        const chatId = msg.chat.id;
+        const loadingMessage = await bot.sendMessage(chatId, "Загружаю расписание на завтра...");
+
+        const tomorrowDate = new Date();
+        tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+
+        if (msg.chat.type === 'private') {
+            processAndSendScheduleForUser(chatId, tomorrowDate, "Расписание на завтра", loadingMessage.message_id);
+        } else {
+            processAndSendScheduleForGroup(chatId, tomorrowDate, "Расписание на завтра", loadingMessage.message_id);
+        }
+    });
+
     bot.on('message', async (msg) => {
         const chatId = msg.chat.id;
         const text = msg.text;
-        
-        if (!text) return;
-        if (text.startsWith('/')) return;
+
+        if (msg.chat.type !== 'private') return;
+        if (!text || text.startsWith('/')) return;
+
         const currentState = userStates[chatId];
         if (!currentState) return;
 
