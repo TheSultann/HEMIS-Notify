@@ -128,10 +128,13 @@ function startBot() {
                     await bot.pinChatMessage(sentMessage.chat.id, sentMessage.message_id, { disable_notification: false });
                     console.log(`Сообщение "${title}" успешно отправлено и закреплено в группе ${group.groupName} (${group.telegramChatId})`);
 
-                } catch (error) {
+                }  catch (error) {
                     const errorMessage = error.response?.data?.message || error.message;
                     console.error(`Ошибка при обработке группы ${group.groupName} (${group.telegramChatId}):`, errorMessage);
-                    await bot.sendMessage(group.telegramChatId, `⚠️ Не удалось получить расписание для группы ${group.groupName}. Ошибка: ${errorMessage}`);
+                    // Не отправляем сообщение об ошибке в чат, если бота кикнули
+                    if (error.code !== 'ETELEGRAM' || !error.message.includes('403 Forbidden')) {
+                         await bot.sendMessage(group.telegramChatId, `⚠️ Не удалось получить расписание для группы ${group.groupName}. Ошибка: ${errorMessage}`);
+                    }
                 }
             }
             console.log(`Групповая рассылка "${title}" завершена.`);
