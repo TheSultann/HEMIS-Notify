@@ -15,7 +15,10 @@ const UserSchema = new mongoose.Schema({
 
     // Технические поля
     hemisToken: { type: String },
-    telegramChatId: { type: String, unique: true, sparse: true }
+    telegramChatId: { type: String, unique: true, sparse: true },
+    lastKnownAbsentHours: { type: Number, default: -1 },
+    language: { type: String, enum: ['ru-RU', 'uz-UZ'], default: null } 
+
 }, { timestamps: true });
 
 module.exports = mongoose.model('User', UserSchema);

@@ -5,6 +5,11 @@ const crypto = require('crypto');
 const algorithm = 'aes-256-cbc';
 const key = process.env.ENCRYPTION_KEY; // 32-байтный ключ из .env
 
+// Добавить проверку
+if (!key || key.length !== 32) {
+    throw new Error('ENCRYPTION_KEY must be exactly 32 bytes (256 bits)');
+}
+
 // Функция шифрования
 function encrypt(text) {
     if (!text) return null;

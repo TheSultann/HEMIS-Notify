@@ -1,3 +1,5 @@
+// Backend/routes/bot.js
+
 const express = require('express');
 const router = express.Router();
 const User = require('../models/User');
@@ -30,16 +32,41 @@ router.post('/register', protectBotRoute, async (req, res) => {
         const { token: hemisToken, profileData } = hemisAuthData;
         const encryptedPassword = encrypt(hemisPassword);
 
+        // --- НОВАЯ ЛОГИКА: Сразу получаем текущие прогулы, чтобы запомнить их ---
+        let initialAbsentHours = 0;
         let user = await User.findOne({ telegramChatId: chatId });
+        const userLanguage = user?.language || 'ru-RU'; // Используем сохраненный язык или по умолчанию русский
+        
+        if (profileData.isStudent) {
+            const semesterCode = await scheduleService.getCurrentSemester(hemisToken, userLanguage);
+            if (semesterCode) {
+                const attData = await scheduleService.getAttendanceFromHemis(hemisToken, semesterCode, userLanguage);
+                if (attData) {
+                    initialAbsentHours = attData.totalHours;
+                }
+            }
+        }
+        // ------------------------------------------------------------------------
 
         if (user) {
+            // Проверяем, это временный пользователь (созданный при выборе языка) или уже зарегистрированный
+            const isTempUser = user.hemisLogin && user.hemisLogin.startsWith('temp_');
+            const existingLanguage = user.language; // Сохраняем язык
+            
             user.hemisLogin = hemisLogin;
             user.hemisPassword = encryptedPassword;
             user.hemisToken = hemisToken;
             user.fullName = profileData.fullName;
             user.role = profileData.isStudent ? 'student' : 'teacher';
             user.group = profileData.groupName;
+            user.lastKnownAbsentHours = initialAbsentHours;
+            
+            // Сохраняем язык, если он был установлен
+            if (existingLanguage) {
+                user.language = existingLanguage;
+            }
         } else {
+            // Пользователя нет - создаем нового
             user = new User({
                 hemisLogin,
                 hemisPassword: encryptedPassword,
@@ -47,7 +74,9 @@ router.post('/register', protectBotRoute, async (req, res) => {
                 hemisToken,
                 fullName: profileData.fullName,
                 role: profileData.isStudent ? 'student' : 'teacher',
-                group: profileData.groupName
+                group: profileData.groupName,
+                lastKnownAbsentHours: initialAbsentHours
+                // Язык по умолчанию null - будет выбран при первом запуске
             });
         }
         
@@ -56,8 +85,7 @@ router.post('/register', protectBotRoute, async (req, res) => {
 
     } catch (error) {
         if (error.code === 11000) {
-            console.error('Bot register error: Duplicate key violation.', error.keyValue);
-            return res.status(409).json({ message: 'A user with this login or chat ID might already exist.' });
+            return res.status(409).json({ message: 'User already exists.' });
         }
         console.error('Bot register error:', error);
         res.status(500).json({ message: 'Server error' });
@@ -71,7 +99,6 @@ router.post('/bind-group', protectBotRoute, async (req, res) => {
     }
 
     try {
-        // --- ИЗМЕНЕНО: Поиск теперь ищет точное вхождение, игнорируя лишние символы ---
         const studentInGroup = await User.findOne({ 
             group: { $regex: groupName, $options: 'i' } 
         });
@@ -103,6 +130,133 @@ router.post('/bind-group', protectBotRoute, async (req, res) => {
     }
 });
 
+// Эндпоинт для массовой проверки новых NB
+router.post('/check-new-absences', protectBotRoute, async (req, res) => {
+    // Вспомогательная функция сравнения (вынести сюда, перед циклом)
+    async function processAttendanceDiff(user, currentData, notifications) {
+        const currentTotal = currentData.totalHours || 0; // Добавляем проверку на undefined
+        const lastKnown = user.lastKnownAbsentHours;
+
+        // Если это первый запуск для юзера (значение -1 или undefined), просто сохраняем
+        if (lastKnown === -1 || lastKnown === undefined || lastKnown === null) {
+            user.lastKnownAbsentHours = currentTotal;
+            await user.save();
+            return;
+        }
+
+        // ЕСЛИ НАШЛИ РАЗНИЦУ В БОЛЬШУЮ СТОРОНУ
+        if (currentTotal > lastKnown) {
+            const diff = currentTotal - lastKnown;
+            
+            // Находим предмет, по которому прилетел NB (последний по дате)
+            // Сортируем все детали всех предметов по дате убывания
+            let allDetails = [];
+            if (currentData.subjects && currentData.subjects.length > 0) {
+                currentData.subjects.forEach(sub => {
+                    if (sub.details && sub.details.length > 0) {
+                        sub.details.forEach(det => {
+                            allDetails.push({ ...det, subjectName: sub.name });
+                        });
+                    }
+                });
+            }
+            allDetails.sort((a, b) => b.date - a.date); // Самые свежие сверху
+            
+            const latestNB = allDetails[0]; // Самый последний NB
+
+            notifications.push({
+                chatId: user.telegramChatId,
+                diff: diff,
+                total: currentTotal,
+                latestSubject: latestNB ? latestNB.subjectName : null,
+                latestDate: latestNB ? latestNB.date : null
+            });
+
+            // Обновляем базу
+            user.lastKnownAbsentHours = currentTotal;
+            await user.save();
+        }
+        // Если часов стало меньше (например, убрали NB), просто обновляем базу без уведомления
+        else if (currentTotal < lastKnown) {
+            user.lastKnownAbsentHours = currentTotal;
+            await user.save();
+        }
+        // Если не изменилось, тоже обновляем базу (на случай если структура данных изменилась)
+        else if (currentTotal === lastKnown) {
+            // Можно обновить базу, но не обязательно
+            // user.lastKnownAbsentHours = currentTotal;
+            // await user.save();
+        }
+    }
+
+    try {
+        // Ищем всех студентов, у которых есть chatID
+        const students = await User.find({ role: 'student', telegramChatId: { $ne: null } });
+        
+        const notifications = [];
+
+        for (const user of students) {
+            try {
+                // Расшифровка пароля
+                const plainPassword = decrypt(user.hemisPassword);
+                let hemisToken = user.hemisToken;
+                const userLanguage = user.language || 'ru-RU'; // Используем язык пользователя или по умолчанию русский
+
+                // 1. Получаем семестр (с авто-обновлением токена)
+                let semesterCode = await scheduleService.getCurrentSemester(hemisToken, userLanguage);
+                
+                if (!semesterCode) {
+                    // Ре-логин
+                    const authData = await scheduleService.performHemisLogin(user.hemisLogin, plainPassword);
+                    if (authData) {
+                        hemisToken = authData.token;
+                        user.hemisToken = hemisToken;
+                        await user.save();
+                        semesterCode = await scheduleService.getCurrentSemester(hemisToken, userLanguage);
+                    }
+                }
+
+                if (!semesterCode) continue; // Пропускаем, если не удалось войти
+
+                // 2. Получаем посещаемость
+                const attData = await scheduleService.getAttendanceFromHemis(hemisToken, semesterCode, userLanguage);
+                
+                // Если ошибка авторизации при получении данных
+                if (attData?.error === 'unauthorized') {
+                     const authData = await scheduleService.performHemisLogin(user.hemisLogin, plainPassword);
+                     if (authData) {
+                        hemisToken = authData.token;
+                        user.hemisToken = hemisToken;
+                        await user.save();
+                        // Повторный запрос
+                        const retryData = await scheduleService.getAttendanceFromHemis(hemisToken, semesterCode, userLanguage);
+                        if (retryData && !retryData.error) {
+                            await processAttendanceDiff(user, retryData, notifications);
+                        } else if (retryData === null) {
+                            console.log(`Failed to get attendance for user ${user.hemisLogin} after re-login`);
+                        }
+                     }
+                } else if (attData && !attData.error) {
+                    await processAttendanceDiff(user, attData, notifications);
+                } else if (attData === null) {
+                    // Если данные не получены (не ошибка авторизации, но и не данные)
+                    console.log(`Failed to get attendance for user ${user.hemisLogin}: API returned null`);
+                    // НЕ обновляем lastKnownAbsentHours, чтобы не потерять текущее состояние
+                }
+
+            } catch (err) {
+                console.error(`Error checking user ${user.hemisLogin}:`, err.message);
+            }
+        }
+
+        res.json({ success: true, notifications });
+
+    } catch (error) {
+        console.error('Global attendance check error:', error);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
 router.get('/groups', protectBotRoute, async (req, res) => {
     try {
         const groups = await Group.find().select('telegramChatId groupName -_id');
@@ -123,8 +277,88 @@ router.get('/subscribers', protectBotRoute, async (req, res) => {
     }
 });
 
+// --- НОВЫЙ ЭНДПОИНТ: Получение профиля ---
+router.get('/me/:chatId', protectBotRoute, async (req, res) => {
+    try {
+        const { chatId } = req.params;
+        // Возвращаем только нужные поля, пароль и токен не нужны
+        const user = await User.findOne({ telegramChatId: chatId }).select('fullName group hemisLogin role language -_id');
+        
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+        
+        res.json({ success: true, data: user });
+    } catch (error) {
+        console.error('Get profile error:', error);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+// --- ЭНДПОИНТ: Получение языка пользователя ---
+router.get('/language/:chatId', protectBotRoute, async (req, res) => {
+    try {
+        const { chatId } = req.params;
+        const user = await User.findOne({ telegramChatId: chatId }).select('language -_id');
+        
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+        
+        res.json({ success: true, language: user.language || null });
+    } catch (error) {
+        console.error('Get language error:', error);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+// --- ЭНДПОИНТ: Установка языка пользователя ---
+router.post('/set-language', protectBotRoute, async (req, res) => {
+    try {
+        const { chatId, language } = req.body;
+        
+        if (!chatId || !language) {
+            return res.status(400).json({ message: 'ChatId and Language are required' });
+        }
+        
+        if (!['ru-RU', 'uz-UZ'].includes(language)) {
+            return res.status(400).json({ message: 'Invalid language. Must be ru-RU or uz-UZ' });
+        }
+        
+        let user = await User.findOne({ telegramChatId: chatId });
+        
+        if (!user) {
+            // Создаем пользователя с минимальными данными, если его нет
+            // Это нужно для сохранения языка до регистрации
+            user = new User({
+                hemisLogin: `temp_${chatId}`, // Временный логин, будет заменен при регистрации
+                hemisPassword: 'temp', // Временный пароль, будет заменен при регистрации
+                telegramChatId: chatId,
+                language: language
+            });
+        } else {
+            user.language = language;
+        }
+        
+        await user.save();
+        
+        res.json({ success: true, message: 'Language updated successfully' });
+    } catch (error) {
+        if (error.code === 11000) {
+            // Если конфликт по hemisLogin, обновляем существующего пользователя
+            const user = await User.findOne({ telegramChatId: chatId });
+            if (user) {
+                user.language = language;
+                await user.save();
+                return res.json({ success: true, message: 'Language updated successfully' });
+            }
+        }
+        console.error('Set language error:', error);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
 async function getGroupSchedule(groupName) {
-    // --- ИЗМЕНЕНО: Поиск теперь ищет точное вхождение, игнорируя лишние символы ---
     const user = await User.findOne({ 
         group: { $regex: groupName, $options: 'i' } 
     });
@@ -135,6 +369,7 @@ async function getGroupSchedule(groupName) {
 
     const plainPassword = decrypt(user.hemisPassword);
     let hemisToken = user.hemisToken;
+    const userLanguage = user.language || 'ru-RU'; // Используем язык пользователя или по умолчанию русский
 
     if (!hemisToken) {
         const authData = await scheduleService.performHemisLogin(user.hemisLogin, plainPassword);
@@ -144,21 +379,21 @@ async function getGroupSchedule(groupName) {
         await user.save();
     }
     
-    const semesterCode = await scheduleService.getCurrentSemester(hemisToken);
+    const semesterCode = await scheduleService.getCurrentSemester(hemisToken, userLanguage);
     if (!semesterCode) {
         const authData = await scheduleService.performHemisLogin(user.hemisLogin, plainPassword);
         if (!authData) throw { status: 401, message: 'Ошибка повторной аутентификации в HEMIS' };
         hemisToken = authData.token;
         user.hemisToken = hemisToken;
         await user.save();
-        const newSemesterCode = await scheduleService.getCurrentSemester(hemisToken);
+        const newSemesterCode = await scheduleService.getCurrentSemester(hemisToken, userLanguage);
         if(!newSemesterCode) throw { status: 400, message: 'Не удалось определить семестр.' };
         
-        const scheduleResult = await scheduleService.getScheduleFromHemis(hemisToken, user, newSemesterCode);
+        const scheduleResult = await scheduleService.getScheduleFromHemis(hemisToken, user, newSemesterCode, userLanguage);
         return { schedule: scheduleResult, role: 'student' };
     }
 
-    let scheduleResult = await scheduleService.getScheduleFromHemis(hemisToken, user, semesterCode);
+    let scheduleResult = await scheduleService.getScheduleFromHemis(hemisToken, user, semesterCode, userLanguage);
 
     if (scheduleResult?.error === 'unauthorized') {
         const authData = await scheduleService.performHemisLogin(user.hemisLogin, plainPassword);
@@ -166,7 +401,7 @@ async function getGroupSchedule(groupName) {
         hemisToken = authData.token;
         user.hemisToken = hemisToken;
         await user.save();
-        scheduleResult = await scheduleService.getScheduleFromHemis(hemisToken, user, semesterCode);
+        scheduleResult = await scheduleService.getScheduleFromHemis(hemisToken, user, semesterCode, userLanguage);
     }
 
     if (scheduleResult === null || scheduleResult?.error) {
@@ -209,6 +444,7 @@ router.get('/schedule/:chatId', protectBotRoute, async (req, res) => {
         if (!user) return res.status(404).json({ message: 'User not found' });
 
         const plainPassword = decrypt(user.hemisPassword);
+        const userLanguage = user.language || 'ru-RU'; // Используем язык пользователя или по умолчанию русский
 
         let hemisToken = user.hemisToken;
         if (!hemisToken) {
@@ -219,7 +455,7 @@ router.get('/schedule/:chatId', protectBotRoute, async (req, res) => {
             await user.save();
         }
         
-        const semesterCode = await scheduleService.getCurrentSemester(hemisToken);
+        const semesterCode = await scheduleService.getCurrentSemester(hemisToken, userLanguage);
         if (!semesterCode) {
             console.log("Could not get semester, trying to re-login to HEMIS...");
             const authData = await scheduleService.performHemisLogin(user.hemisLogin, plainPassword);
@@ -227,14 +463,14 @@ router.get('/schedule/:chatId', protectBotRoute, async (req, res) => {
             hemisToken = authData.token;
             user.hemisToken = hemisToken;
             await user.save();
-            const newSemesterCode = await scheduleService.getCurrentSemester(hemisToken);
+            const newSemesterCode = await scheduleService.getCurrentSemester(hemisToken, userLanguage);
             if(!newSemesterCode) return res.status(400).json({ message: 'Could not determine semester even after re-login.' });
             
-            const scheduleResult = await scheduleService.getScheduleFromHemis(hemisToken, user, newSemesterCode);
+            const scheduleResult = await scheduleService.getScheduleFromHemis(hemisToken, user, newSemesterCode, userLanguage);
             return res.json({ schedule: scheduleResult, role: user.role });
         }
 
-        let scheduleResult = await scheduleService.getScheduleFromHemis(hemisToken, user, semesterCode);
+        let scheduleResult = await scheduleService.getScheduleFromHemis(hemisToken, user, semesterCode, userLanguage);
 
         if (scheduleResult?.error === 'unauthorized') {
             const authData = await scheduleService.performHemisLogin(user.hemisLogin, plainPassword);
@@ -242,7 +478,7 @@ router.get('/schedule/:chatId', protectBotRoute, async (req, res) => {
             hemisToken = authData.token;
             user.hemisToken = hemisToken;
             await user.save();
-            scheduleResult = await scheduleService.getScheduleFromHemis(hemisToken, user, semesterCode);
+            scheduleResult = await scheduleService.getScheduleFromHemis(hemisToken, user, semesterCode, userLanguage);
         }
 
         if (scheduleResult === null || scheduleResult?.error) {
@@ -253,6 +489,67 @@ router.get('/schedule/:chatId', protectBotRoute, async (req, res) => {
 
     } catch (error) {
         console.error('Get schedule for bot error:', error);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+
+router.get('/attendance/:chatId', protectBotRoute, async (req, res) => {
+    try {
+        const { chatId } = req.params;
+        const user = await User.findOne({ telegramChatId: chatId });
+        
+        if (!user) return res.status(404).json({ message: 'User not found' });
+        if (user.role !== 'student') return res.status(400).json({ message: 'Only students have attendance records' });
+
+        const plainPassword = decrypt(user.hemisPassword);
+        const userLanguage = user.language || 'ru-RU'; // Используем язык пользователя или по умолчанию русский
+        let hemisToken = user.hemisToken;
+
+        // 1. Проверка/Обновление токена (стандартная процедура)
+        if (!hemisToken) {
+            const authData = await scheduleService.performHemisLogin(user.hemisLogin, plainPassword);
+            if (!authData) return res.status(401).json({ message: 'Failed to authenticate' });
+            hemisToken = authData.token;
+            user.hemisToken = hemisToken;
+            await user.save();
+        }
+
+        // 2. Получение семестра
+        let semesterCode = await scheduleService.getCurrentSemester(hemisToken, userLanguage);
+        if (!semesterCode) {
+            // Ре-логин если токен протух
+            const authData = await scheduleService.performHemisLogin(user.hemisLogin, plainPassword);
+            if (!authData) return res.status(401).json({ message: 'Failed to re-authenticate' });
+            hemisToken = authData.token;
+            user.hemisToken = hemisToken;
+            await user.save();
+            semesterCode = await scheduleService.getCurrentSemester(hemisToken, userLanguage);
+        }
+
+        if (!semesterCode) return res.status(400).json({ message: 'Semester not found' });
+
+        // 3. Запрос посещаемости
+        let attendanceData = await scheduleService.getAttendanceFromHemis(hemisToken, semesterCode, userLanguage);
+
+        // Обработка 401 при запросе данных
+        if (attendanceData?.error === 'unauthorized') {
+            const authData = await scheduleService.performHemisLogin(user.hemisLogin, plainPassword);
+            if (!authData) return res.status(401).json({ message: 'Failed to re-authenticate' });
+            hemisToken = authData.token;
+            user.hemisToken = hemisToken;
+            await user.save();
+            attendanceData = await scheduleService.getAttendanceFromHemis(hemisToken, semesterCode, userLanguage);
+        }
+
+        if (!attendanceData) {
+            return res.status(500).json({ message: 'Failed to fetch attendance' });
+        }
+
+        res.json({ success: true, data: attendanceData });
+
+    } catch (error) {
+        console.error('Get attendance error:', error);
         res.status(500).json({ message: 'Server error' });
     }
 });

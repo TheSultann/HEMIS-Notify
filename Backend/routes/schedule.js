@@ -17,7 +17,7 @@ async function performHemisLogin(hemisLogin, hemisPassword) {
         }
         const token = loginData.data.token;
 
-        const profileResponse = await fetch(`${process.env.HEMIS_API_BASE}/v1/account/me`, {
+        const profileResponse = await fetch(`${process.env.HEMIS_API_BASE}/v1/account/me?l=ru-RU`, {
             headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json', 'Origin': 'https://student.urdu.uz' }
         });
         const profileData = await profileResponse.json();
@@ -26,14 +26,12 @@ async function performHemisLogin(hemisLogin, hemisPassword) {
             return null;
         }
         
-        // ИЗМЕНЕНО: Безопасное получение имени группы с помощью optional chaining (?.),
-        // чтобы избежать ошибки, если у пользователя нет информации о группе.
         return {
             token,
             profileData: {
                 fullName: profileData.data?.full_name,
                 isStudent: !!profileData.data?.student_id_number,
-                groupName: profileData.data?.group?.name || null // Если группы нет, будет null
+                groupName: profileData.data?.group?.name || null
             }
         };
     } catch (error) {
@@ -42,9 +40,10 @@ async function performHemisLogin(hemisLogin, hemisPassword) {
     }
 }
 
-async function getCurrentSemester(hemisToken) {
+async function getCurrentSemester(hemisToken, language = 'ru-RU') {
     const endpoint = '/v1/account/me';
-    const url = `${process.env.HEMIS_API_BASE}${endpoint}`;
+    const langParam = language ? `?l=${language}` : '';
+    const url = `${process.env.HEMIS_API_BASE}${endpoint}${langParam}`;
     
     try {
         const response = await fetch(url, {
@@ -62,8 +61,9 @@ async function getCurrentSemester(hemisToken) {
     }
 }
 
-async function getScheduleFromHemis(hemisToken, user, semesterCode) {
-    const endpoint = `/v1/education/schedule?semester=${semesterCode}`;
+async function getScheduleFromHemis(hemisToken, user, semesterCode, language = 'ru-RU') {
+    const langParam = language ? `&l=${language}` : '';
+    const endpoint = `/v1/education/schedule?semester=${semesterCode}${langParam}`;
     const url = `${process.env.HEMIS_API_BASE}${endpoint}`;
 
     try {
@@ -97,10 +97,81 @@ async function getScheduleFromHemis(hemisToken, user, semesterCode) {
     }
 }
 
+async function getAttendanceFromHemis(hemisToken, semesterCode, language = 'ru-RU') {
+    const langParam = language ? `&l=${language}` : '';
+    const endpoint = `/v1/education/attendance?semester=${semesterCode}${langParam}`;
+    const url = `${process.env.HEMIS_API_BASE}${endpoint}`;
+
+    try {
+        const response = await fetch(url, {
+            method: 'GET',
+            headers: { 'Authorization': `Bearer ${hemisToken}`, 'Accept': 'application/json', 'Origin': 'https://student.urdu.uz' }
+        });
+
+        if (response.status === 401) return { error: 'unauthorized' };
+        const data = await response.json();
+
+        if (!data.success || !data.data) return null;
+
+        const subjectsMap = {};
+        let totalHours = 0;
+        let justifiedHours = 0;
+        let unjustifiedHours = 0;
+
+        data.data.forEach(item => {
+            const hours = (item.absent_on || 0) + (item.absent_off || 0);
+            
+            if (hours > 0) {
+                totalHours += hours;
+                const isJustified = item.explicable === true;
+
+                if (isJustified) justifiedHours += hours;
+                else unjustifiedHours += hours;
+
+                const subjectName = item.subject?.name || 'Неизвестный предмет';
+                
+                if (!subjectsMap[subjectName]) {
+                    subjectsMap[subjectName] = {
+                        name: subjectName,
+                        totalSubjectHours: 0,
+                        details: []
+                    };
+                }
+
+                subjectsMap[subjectName].totalSubjectHours += hours;
+                subjectsMap[subjectName].details.push({
+                    date: item.lesson_date, // Timestamp
+                    time: item.lessonPair?.start_time || '',
+                    hours: hours,
+                    isJustified: isJustified
+                });
+            }
+        });
+
+        // Превращаем объект в массив и сортируем детали по дате
+        const subjects = Object.values(subjectsMap).map(sub => {
+            sub.details.sort((a, b) => a.date - b.date); // Сортировка дат от старых к новым
+            return sub;
+        });
+
+        return { 
+            totalHours, 
+            justifiedHours, 
+            unjustifiedHours, 
+            subjects 
+        };
+
+    } catch (error) {
+        console.error('Failed to get attendance:', error);
+        return null;
+    }
+}
+
+
 router.scheduleService = {
     performHemisLogin,
     getCurrentSemester,
-    getScheduleFromHemis
+    getScheduleFromHemis,
+    getAttendanceFromHemis
 };
-
 module.exports = router;
