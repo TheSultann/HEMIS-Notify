@@ -130,6 +130,31 @@ router.post('/bind-group', protectBotRoute, async (req, res) => {
     }
 });
 
+// --- ЭНДПОИНТ: Отвязка группы (Unbind) ---
+router.post('/unbind-group', protectBotRoute, async (req, res) => {
+    const { chatId } = req.body;
+    
+    if (!chatId) {
+        return res.status(400).json({ message: 'Chat ID is required' });
+    }
+
+    try {
+        // Удаляем запись о группе по ID чата
+        const deletedGroup = await Group.findOneAndDelete({ telegramChatId: chatId });
+
+        if (!deletedGroup) {
+            return res.status(404).json({ message: 'Этот чат не был привязан ни к одной группе.' });
+        }
+        
+        res.status(200).json({ success: true, message: `Группа "${deletedGroup.groupName}" успешно отвязана.` });
+
+    } catch (error) {
+        console.error('Unbind group error:', error);
+        res.status(500).json({ message: 'Ошибка сервера при отвязке группы' });
+    }
+});
+
+
 // Эндпоинт для массовой проверки новых NB
 router.post('/check-new-absences', protectBotRoute, async (req, res) => {
     // Вспомогательная функция сравнения (вынести сюда, перед циклом)
@@ -550,6 +575,146 @@ router.get('/attendance/:chatId', protectBotRoute, async (req, res) => {
 
     } catch (error) {
         console.error('Get attendance error:', error);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+
+// --- ЭНДПОИНТ: Полный выход (Logout) ---
+router.post('/logout', protectBotRoute, async (req, res) => {
+    try {
+        const { chatId } = req.body;
+        if (!chatId) return res.status(400).json({ message: 'ChatId required' });
+
+        // Полностью удаляем пользователя из базы
+        await User.findOneAndDelete({ telegramChatId: chatId });
+        
+        res.json({ success: true, message: 'Logged out successfully' });
+    } catch (error) {
+        console.error('Logout error:', error);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+// --- ЭНДПОИНТ: Обновление активности ("Я жив") ---
+router.post('/activity', protectBotRoute, async (req, res) => {
+    const { chatId, isBlocked } = req.body;
+    if (!chatId) return res.sendStatus(400);
+
+    try {
+        const updateData = { lastActiveAt: new Date() };
+        if (typeof isBlocked === 'boolean') {
+            updateData.isBlocked = isBlocked;
+        }
+
+        await User.updateOne({ telegramChatId: chatId }, updateData);
+        res.sendStatus(200);
+    } catch (e) {
+        // Ошибки тут не критичны, логировать не обязательно
+        res.sendStatus(500);
+    }
+});
+// --- ЭНДПОИНТ: Расширенная статистика для админа ---
+router.get('/stats', protectBotRoute, async (req, res) => {
+    try {
+        const todayStart = new Date();
+        todayStart.setHours(0, 0, 0, 0);
+
+        const weekAgo = new Date();
+        weekAgo.setDate(weekAgo.getDate() - 7);
+
+        const monthAgo = new Date();
+        monthAgo.setDate(monthAgo.getDate() - 30);
+
+        // 1. АУДИТОРИЯ
+        const totalUsers = await User.countDocuments({});
+        const blockedUsers = await User.countDocuments({ isBlocked: true });
+        const activeUsers = totalUsers - blockedUsers;
+
+        // 2. ДИНАМИКА ПРИРОСТА (Новые регистрации)
+        const newToday = await User.countDocuments({ createdAt: { $gte: todayStart } });
+        const newWeek = await User.countDocuments({ createdAt: { $gte: weekAgo } });
+
+        // 3. АКТИВНОСТЬ (DAU / WAU)
+        // Пользователи, которые нажимали что-то сегодня
+        const dau = await User.countDocuments({ lastActiveAt: { $gte: todayStart } });
+        // Пользователи, активные за неделю
+        const wau = await User.countDocuments({ lastActiveAt: { $gte: weekAgo } });
+        // Спящие (не заходили месяц)
+        const sleeping = await User.countDocuments({ lastActiveAt: { $lt: monthAgo } });
+
+        // 4. СИСТЕМА
+        const uniqueGroups = await User.distinct('group', { role: 'student' });
+        const connectedChats = await Group.countDocuments({});
+
+        res.json({
+            success: true,
+            audience: {
+                total: totalUsers,
+                active: activeUsers,
+                blocked: blockedUsers
+            },
+            growth: {
+                today: newToday,
+                week: newWeek
+            },
+            activity: {
+                dau: dau,
+                wau: wau,
+                sleeping: sleeping
+            },
+            system: {
+                groups: uniqueGroups.filter(Boolean).length,
+                chats: connectedChats
+            }
+        });
+    } catch (error) {
+        console.error('Stats error:', error);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+// --- ЭНДПОИНТ: Авто-привязка группы через студента ---
+router.post('/bind-by-user', protectBotRoute, async (req, res) => {
+    const { groupChatId, userTelegramId } = req.body;
+
+    if (!groupChatId || !userTelegramId) {
+        return res.status(400).json({ message: 'Missing parameters' });
+    }
+
+    try {
+        // 1. Ищем студента, который нажал кнопку
+        const student = await User.findOne({ telegramChatId: userTelegramId });
+
+        if (!student) {
+            return res.status(404).json({ message: 'user_not_found' });
+        }
+        
+        if (!student.group) {
+            return res.status(400).json({ message: 'У вас не указана группа в профиле.' });
+        }
+
+        const groupName = student.group;
+
+        // 2. Привязываем группу (копируем логику из bind-group)
+        let group = await Group.findOne({ telegramChatId: groupChatId });
+        if (group) {
+            group.groupName = groupName;
+        } else {
+            // Проверяем, не занята ли группа другим чатом
+            const existing = await Group.findOne({ groupName });
+            if (existing) {
+                return res.status(409).json({ message: `Группа "${groupName}" уже привязана к другому чату.` });
+            }
+            group = new Group({ groupName, telegramChatId: groupChatId });
+        }
+        
+        await group.save();
+        
+        res.json({ success: true, groupName: groupName, studentName: student.fullName });
+
+    } catch (error) {
+        console.error('Bind by user error:', error);
         res.status(500).json({ message: 'Server error' });
     }
 });

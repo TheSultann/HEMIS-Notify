@@ -17,7 +17,12 @@ const UserSchema = new mongoose.Schema({
     hemisToken: { type: String },
     telegramChatId: { type: String, unique: true, sparse: true },
     lastKnownAbsentHours: { type: Number, default: -1 },
-    language: { type: String, enum: ['ru-RU', 'uz-UZ'], default: null } 
+    language: { type: String, enum: ['ru-RU', 'uz-UZ'], default: null },
+
+      // --- НОВЫЕ ПОЛЯ ДЛЯ СТАТИСТИКИ ---
+      isBlocked: { type: Boolean, default: false }, // Заблокировал ли юзер бота
+      lastActiveAt: { type: Date, default: Date.now }, // Дата последнего нажатия кнопок
+      // createdAt создается автоматически благодаря { timestamps: true }
 
 }, { timestamps: true });
 

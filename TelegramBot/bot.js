@@ -20,18 +20,89 @@ function startBot() {
     const bot = new TelegramBot(token, { polling: true });
     console.log('Телеграм-бот запущен...');
 
-    // Регистрация команд (будут локализованы при первом использовании)
-    bot.setMyCommands([
-        { command: '/start', description: '🏠 Главное меню' },
-        { command: '/schedule_today', description: '📅 Расписание на сегодня' },
-        { command: '/schedule_tomorrow', description: '📅 Расписание на завтра' },
-        { command: '/me', description: '👤 Мой профиль' },
-        { command: '/login', description: '🔑 Вход в систему' }
-    ]);
+
+    (async () => {
+        try {
+            // 1. Дефолт (пусто или минимум)
+            await bot.setMyCommands([
+                { command: '/start', description: '👋 Перезапуск' }
+            ], { scope: { type: 'default' } });
+
+            // 2. Для ОБЫЧНЫХ участников групп (только расписание)
+            await bot.setMyCommands([
+                { command: '/start', description: '👋 Приветствие' },
+                { command: '/schedule_today', description: '📅 Расписание группы' },
+                { command: '/schedule_tomorrow', description: '📅 Расписание на завтра' },
+                { command: '/bind_me', description: '🔗 Привязать мою группу' },
+                { command: '/unbind_group', description: '❌ Отвязать группу' } 
+            ], { scope: { type: 'all_group_chats' } });
+
+            // 3. Для АДМИНОВ групп (добавляем Unbind)
+            await bot.setMyCommands([
+                { command: '/start', description: '👋 Приветствие' },
+                { command: '/schedule_today', description: '📅 Расписание группы' },
+                { command: '/schedule_tomorrow', description: '📅 Расписание на завтра' },
+                { command: '/bind_me', description: '🔗 Привязать мою группу' },
+                { command: '/unbind_group', description: '❌ Отвязать группу' } // <--- НОВАЯ
+                
+            ], { scope: { type: 'all_chat_administrators' } });
+
+            // 4. Для ЛИЧКИ (полный доступ)
+            await bot.setMyCommands([
+                { command: '/start', description: '🏠 Главное меню' },
+                { command: '/schedule_today', description: '📅 Расписание на сегодня' },
+                { command: '/schedule_tomorrow', description: '📅 Расписание на завтра' },
+                { command: '/me', description: '👤 Мой профиль' },
+                { command: '/login', description: '🔑 Вход в систему' },
+                { command: '/logout', description: '🚪 Выйти из системы' }
+            ], { scope: { type: 'all_private_chats' } });
+
+            console.log('✅ Меню команд обновлено (unbind добавлен админам).');
+        } catch (error) {
+            console.error('❌ Ошибка при обновлении меню:', error.message);
+        }
+    })();
 
     const userStates = {};
 
-    // --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+    bot.on('message', (msg) => {
+        if (msg.chat.type === 'private') trackActivity(msg.chat.id);
+    });
+    bot.on('callback_query', (query) => {
+        if (query.message.chat.type === 'private') trackActivity(query.message.chat.id);
+    });
+
+    // Функция отправки "маячка" на сервер
+    async function trackActivity(chatId) {
+        try {
+            await axios.post(`${apiUrl}/api/bot/activity`, {
+                chatId: chatId.toString()
+            }, { headers: { 'x-bot-secret': botApiSecret } });
+        } catch (e) {
+            // Игнорируем ошибки (не страшно, если статистика пропустит один клик)
+        }
+    }
+
+    // Отслеживание блокировки бота пользователем
+    bot.on('my_chat_member', async (u) => {
+        if (u.new_chat_member.status === 'kicked') {
+            // Юзер заблокировал бота -> шлем isBlocked: true
+            try {
+                await axios.post(`${apiUrl}/api/bot/activity`, {
+                    chatId: u.chat.id.toString(),
+                    isBlocked: true
+                }, { headers: { 'x-bot-secret': botApiSecret } });
+            } catch (e) {}
+        } else if (u.new_chat_member.status === 'member') {
+            // Юзер разблокировал бота -> шлем isBlocked: false
+            try {
+                await axios.post(`${apiUrl}/api/bot/activity`, {
+                    chatId: u.chat.id.toString(),
+                    isBlocked: false
+                }, { headers: { 'x-bot-secret': botApiSecret } });
+            } catch (e) {}
+        }
+    });
 
     // Получение языка пользователя
     async function getUserLanguage(chatId) {
@@ -295,6 +366,92 @@ function startBot() {
         }
     });
 
+    // Отдельный слушатель для Админских кнопок (Рассылка)
+    bot.on('callback_query', async (query) => {
+        const chatId = query.message.chat.id;
+        const data = query.data;
+        const ADMIN_ID = process.env.ADMIN_ID;
+
+        // Если это не админ или не наши кнопки - игнорируем
+        if (String(chatId) !== String(ADMIN_ID) || !data.startsWith('bc_')) return;
+
+        await bot.answerCallbackQuery(query.id);
+
+        // 1. Выбрали аудиторию -> Просим текст
+        if (data === 'bc_target_students' || data === 'bc_target_groups') {
+            const target = data === 'bc_target_students' ? 'students' : 'groups';
+
+            // Запоминаем состояние: ждем текст для конкретной цели
+            userStates[chatId] = {
+                state: 'awaiting_broadcast_text',
+                target: target
+            };
+
+            await bot.editMessageText(`✍️ <b>Введите текст сообщения для рассылки (${target === 'students' ? 'Студентам' : 'Группам'}):</b>\n\n<i>Можно использовать HTML теги, ссылки и смайлики.</i>`, {
+                chat_id: chatId,
+                message_id: query.message.message_id,
+                parse_mode: 'HTML'
+            });
+        }
+
+        // 2. Отмена
+        else if (data === 'bc_cancel') {
+            delete userStates[chatId];
+            await bot.deleteMessage(chatId, query.message.message_id).catch(() => { });
+            await bot.sendMessage(chatId, '❌ Рассылка отменена.');
+        }
+
+       // 3. Подтверждение отправки
+       else if (data === 'bc_send') {
+        const draft = userStates[chatId];
+        if (!draft || (!draft.text && !draft.photo)) {
+            return bot.sendMessage(chatId, 'Ошибка: данные рассылки устарели.');
+        }
+
+        // Удаляем превью (сообщение с кнопкой), чтобы было красиво
+        await bot.deleteMessage(chatId, query.message.message_id).catch(() => {});
+        const loadingMsg = await bot.sendMessage(chatId, '⏳ <b>Начинаю рассылку...</b>', { parse_mode: 'HTML' });
+
+        try {
+            // Получаем список ID
+            const endpoint = draft.target === 'students' ? '/api/bot/subscribers' : '/api/bot/groups';
+            const { data: list } = await axios.get(`${apiUrl}${endpoint}`, {
+                headers: { 'x-bot-secret': botApiSecret }
+            });
+
+            let successCount = 0;
+            let failCount = 0;
+
+            // Отправляем
+            for (const item of list) {
+                try {
+                    if (draft.photo) {
+                        // Если есть фото
+                        await bot.sendPhoto(item.telegramChatId, draft.photo, { caption: draft.text, parse_mode: 'HTML' });
+                    } else {
+                        // Если только текст
+                        await bot.sendMessage(item.telegramChatId, draft.text, { parse_mode: 'HTML' });
+                    }
+                    successCount++;
+                } catch (e) {
+                    failCount++;
+                }
+                // Пауза 30мс
+                await new Promise(resolve => setTimeout(resolve, 30));
+            }
+
+            delete userStates[chatId];
+            
+            await bot.deleteMessage(chatId, loadingMsg.message_id).catch(() => {});
+            await bot.sendMessage(chatId, `✅ <b>Рассылка завершена!</b>\n\n📨 Отправлено: ${successCount}\n🚫 Ошибок/Блоков: ${failCount}`, { parse_mode: 'HTML' });
+
+        } catch (error) {
+            console.error('Broadcast error:', error);
+            await bot.sendMessage(chatId, '❌ Ошибка при выполнении рассылки.');
+        }
+    }
+    });
+
     // 4. Кнопка "Мой профиль" / "Mening profilim"
     bot.onText(/(👤 Мой профиль|👤 Mening profilim)/, async (msg) => {
         const language = await getUserLanguage(msg.chat.id);
@@ -397,9 +554,43 @@ function startBot() {
         }
     });
 
+    // --- КОМАНДА /LOGOUT ---
+    bot.onText(/\/logout/, async (msg) => {
+        const chatId = msg.chat.id;
+        const language = await getUserLanguage(chatId);
+
+        if (msg.chat.type !== 'private') return;
+        try {
+            // 1. Отправляем запрос на удаление
+            await axios.post(`${apiUrl}/api/bot/logout`, {
+                chatId: chatId.toString()
+            }, {
+                headers: { 'x-bot-secret': botApiSecret }
+            });
+
+            // 2. Чистим локальное состояние
+            delete userStates[chatId];
+
+            // 3. Пишем сообщение и показываем кнопку входа
+            // (текст loggedOut нужно добавить в i18n.js, или напиши тут просто "Вы вышли.")
+            const text = language === 'uz-UZ' ? 'Tizimdan chiqdingiz.' : 'Вы вышли из системы.';
+
+            await bot.sendMessage(chatId, `✅ ${text}`, keyboards.getGuestMenu(language));
+
+        } catch (error) {
+            console.error('Logout error:', error.message);
+            const errText = language === 'uz-UZ' ? 'Xatolik yuz berdi.' : 'Произошла ошибка.';
+            bot.sendMessage(chatId, errText);
+        }
+    });
+
+
+
     // --- КОМАНДА /START ---
     bot.onText(/\/start/, async (msg) => {
         const chatId = msg.chat.id;
+        const ADMIN_ID = process.env.ADMIN_ID; // Получаем ID из .env
+
         if (msg.chat.type !== 'private') {
             const language = await getUserLanguage(chatId);
             return bot.sendMessage(chatId, i18n.t(language, 'helloGroup'));
@@ -407,28 +598,28 @@ function startBot() {
 
         delete userStates[chatId];
 
-        // Проверяем, выбран ли язык
         try {
             const { data } = await axios.get(`${apiUrl}/api/bot/language/${chatId}`, {
                 headers: { 'x-bot-secret': botApiSecret }
             });
 
             if (!data.language) {
-                // Язык не выбран - показываем выбор языка
                 return bot.sendMessage(chatId, i18n.t('ru-RU', 'selectLanguage'), keyboards.getLanguageSelectionKeyboard());
             }
 
             const language = data.language;
 
-            // Проверяем, зарегистрирован ли пользователь
+            // Выбираем клавиатуру: Админская или Обычная
+            const menuKeyboard = (String(chatId) === String(ADMIN_ID))
+                ? keyboards.getAdminMenu(language)
+                : keyboards.getMainMenu(language);
+
             try {
                 await axios.get(`${apiUrl}/api/bot/schedule/${chatId}`, { headers: { 'x-bot-secret': botApiSecret } });
-                bot.sendMessage(chatId, i18n.t(language, 'welcomeBack'), keyboards.getMainMenu(language));
+                bot.sendMessage(chatId, i18n.t(language, 'welcomeBack'), menuKeyboard);
             } catch (error) {
-                // ЕСЛИ НЕ ЗАРЕГИСТРИРОВАН -> БЕСШОВНЫЙ ОНБОРДИНГ
+                // Если не зарегистрирован
                 await bot.sendMessage(chatId, i18n.t(language, 'welcomeOnboarding'), { parse_mode: 'HTML' });
-
-                // Сразу переводим в режим ожидания логина
                 userStates[chatId] = { state: 'awaiting_hemis_login' };
                 await bot.sendMessage(chatId, i18n.t(language, 'enterHemisLogin'), {
                     parse_mode: 'HTML',
@@ -436,39 +627,169 @@ function startBot() {
                 });
             }
         } catch (error) {
-            // Если ошибка при получении языка, показываем выбор языка
             bot.sendMessage(chatId, i18n.t('ru-RU', 'selectLanguage'), keyboards.getLanguageSelectionKeyboard());
         }
     });
 
-    // --- ЛОГИКА АВТОРИЗАЦИИ (БЕЗОПАСНАЯ) ---
+   // Кнопка "📊 Статистика" (Расширенная)
+   bot.onText(/📊 Статистика/, async (msg) => {
+    const chatId = msg.chat.id;
+    const ADMIN_ID = process.env.ADMIN_ID;
+
+    if (String(chatId) !== String(ADMIN_ID)) return;
+
+    try {
+        const { data } = await axios.get(`${apiUrl}/api/bot/stats`, {
+            headers: { 'x-bot-secret': botApiSecret }
+        });
+
+        // Красивое форматирование
+        const { audience, growth, activity, system } = data;
+        
+        const text = `📊 <b>РАСШИРЕННАЯ СТАТИСТИКА</b>\n\n` +
+            `👥 <b>Аудитория:</b>\n` +
+            `• Всего в базе: <b>${audience.total}</b>\n` +
+            `• Живые: <b>${audience.active}</b>\n` +
+            `• 💀 Блок: <b>${audience.blocked}</b>\n\n` +
+            
+            `📈 <b>Прирост (Сегодня / Неделя):</b>\n` +
+            `• Новые: <b>+${growth.today}</b> / <b>+${growth.week}</b>\n\n` +
+            
+            `🔥 <b>Активность:</b>\n` +
+            `• Сегодня (DAU): <b>${activity.dau}</b>\n` +
+            `• За неделю (WAU): <b>${activity.wau}</b>\n` +
+            `• 💤 Спящие (>30д): <b>${activity.sleeping}</b>\n\n` +
+            
+            `💻 <b>Система:</b>\n` +
+            `• Групп: <b>${system.groups}</b>\n` +
+            `• Чатов: <b>${system.chats}</b>`;
+
+        bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
+
+    } catch (error) {
+        console.error('Stats error:', error.message);
+        bot.sendMessage(chatId, 'Ошибка получения статистики.');
+    }
+});
+
+    // Кнопка "📢 Рассылка" (Только Админ)
+    bot.onText(/📢 Рассылка/, async (msg) => {
+        const chatId = msg.chat.id;
+        const ADMIN_ID = process.env.ADMIN_ID;
+
+        if (String(chatId) !== String(ADMIN_ID)) return;
+
+        await bot.sendMessage(chatId, '📢 <b>Выберите аудиторию для рассылки:</b>', {
+            parse_mode: 'HTML',
+            ...keyboards.getBroadcastTargetKeyboard()
+        });
+    });
+
+    // --- КОМАНДА /BIND_ME (Авто-привязка) ---
+    bot.onText(/\/bind_me/, async (msg) => {
+        const groupChatId = msg.chat.id;
+        const userTelegramId = msg.from.id;
+
+        // Работает только в группах
+        if (!['group', 'supergroup'].includes(msg.chat.type)) {
+            return bot.sendMessage(groupChatId, 'Эта команда работает только в группах.');
+        }
+
+        // Проверяем права (опционально, можно разрешить всем студентам, но лучше админам)
+        try {
+            const member = await bot.getChatMember(groupChatId, userTelegramId);
+            if (!['creator', 'administrator'].includes(member.status)) {
+                return bot.sendMessage(groupChatId, 'Только администраторы могут привязывать группу.');
+            }
+
+            const res = await axios.post(`${apiUrl}/api/bot/bind-by-user`, {
+                groupChatId: groupChatId.toString(),
+                userTelegramId: userTelegramId.toString()
+            }, {
+                headers: { 'x-bot-secret': botApiSecret }
+            });
+
+            if (res.data.success) {
+                bot.sendMessage(groupChatId, `✅ <b>Успешно!</b>\n\nГруппа <b>"${res.data.groupName}"</b> привязана к этому чату.\n(По данным студента: ${res.data.studentName})`, { parse_mode: 'HTML' });
+            }
+
+        } catch (e) {
+            if (e.response?.status === 404 && e.response?.data?.message === 'user_not_found') {
+                // Если юзер не найден в боте
+                return bot.sendMessage(groupChatId, `❌ Вы не зарегистрированы в боте.\n\nЗайдите в ЛС к @HEMISnotify_bot, нажмите /start и войдите в систему, затем вернитесь сюда и нажмите /bind_me.`);
+            }
+            
+            const errorMsg = e.response?.data?.message || e.message;
+            bot.sendMessage(groupChatId, `❌ Ошибка: ${errorMsg}`);
+        }
+    });
+
+
+    // --- ЛОГИКА АВТОРИЗАЦИИ И РАССЫЛКИ ---
     bot.on('message', async (msg) => {
         const chatId = msg.chat.id;
-        const text = msg.text;
+        const text = msg.text || msg.caption; // Берем текст ИЛИ подпись к фото
 
-        if (!text || text.startsWith('/') || msg.chat.type !== 'private') return;
+        // Проверяем состояние
+        const state = userStates[chatId]?.state;
+
+        // 1. ЛОВИМ КОНТЕНТ ДЛЯ РАССЫЛКИ (Текст или Фото)
+        if (state === 'awaiting_broadcast_text') {
+            const target = userStates[chatId].target;
+            
+            // Сохраняем данные
+            userStates[chatId].text = text || ''; // Текст может быть пустым, если просто фото
+            userStates[chatId].photo = msg.photo ? msg.photo[msg.photo.length - 1].file_id : null; // ID самой большой фотки
+            
+            // Если прислали ерунду (ни текста, ни фото)
+            if (!userStates[chatId].text && !userStates[chatId].photo) {
+                return bot.sendMessage(chatId, '❌ Отправьте текст или фото.');
+            }
+
+            userStates[chatId].state = 'awaiting_broadcast_confirm';
+
+            // Показываем предпросмотр
+            const confirmKb = keyboards.getBroadcastConfirmKeyboard();
+            const caption = `📢 <b>ПРЕДПРОСМОТР</b>\nTarget: ${target}\n➖➖➖\n${userStates[chatId].text}\n➖➖➖\n<i>Отправить?</i>`;
+
+            if (userStates[chatId].photo) {
+                return bot.sendPhoto(chatId, userStates[chatId].photo, { caption: caption, parse_mode: 'HTML', ...confirmKb });
+            } else {
+                return bot.sendMessage(chatId, caption, { parse_mode: 'HTML', ...confirmKb });
+            }
+        }
+
+        // --- ДАЛЕЕ СТАНДАРТНЫЕ ПРОВЕРКИ (Игнорируем фото в обычной переписке) ---
+        if (!msg.text || msg.text.startsWith('/') || msg.chat.type !== 'private') return;
 
         const language = await getUserLanguage(chatId);
 
-        // Безопасная проверка кнопок (для обоих языков)
+        // Безопасная проверка кнопок
         const mainMenuRu = keyboards.getMainMenu('ru-RU').reply_markup.keyboard;
         const mainMenuUz = keyboards.getMainMenu('uz-UZ').reply_markup.keyboard;
         const guestMenuRu = keyboards.getGuestMenu('ru-RU').reply_markup.keyboard;
         const guestMenuUz = keyboards.getGuestMenu('uz-UZ').reply_markup.keyboard;
-        const allButtons = new Set([...mainMenuRu, ...mainMenuUz, ...guestMenuRu, ...guestMenuUz].flat());
+        const adminMenuRu = keyboards.getAdminMenu('ru-RU').reply_markup.keyboard;
+        
+        const allButtons = new Set([
+            ...mainMenuRu, ...mainMenuUz, 
+            ...guestMenuRu, ...guestMenuUz,
+            ...adminMenuRu 
+        ].flat());
 
         if (allButtons.has(text)) return;
-
         if (!userStates[chatId]) return;
 
-        if (userStates[chatId].state === 'awaiting_hemis_login') {
+        // 2. Ловим логин HEMIS
+        if (state === 'awaiting_hemis_login') {
             userStates[chatId].hemisLogin = text;
             userStates[chatId].state = 'awaiting_hemis_password';
             bot.sendMessage(chatId, i18n.t(language, 'enterHemisPassword'), { parse_mode: 'HTML', ...keyboards.removeKeyboard });
         }
-        else if (userStates[chatId].state === 'awaiting_hemis_password') {
+        // 3. Ловим пароль HEMIS
+        else if (state === 'awaiting_hemis_password') {
             const { hemisLogin } = userStates[chatId];
-            delete userStates[chatId];
+            delete userStates[chatId]; // Сбрасываем состояние
 
             bot.deleteMessage(chatId, msg.message_id).catch(() => { });
             const loading = await bot.sendMessage(chatId, i18n.t(language, 'checkingData'));
@@ -613,6 +934,41 @@ function startBot() {
             if (res.data.success) {
                 bot.sendMessage(chatId, `✅ ${res.data.message}`);
             }
+        } catch (e) {
+            const errorMsg = e.response?.data?.message || e.message;
+            bot.sendMessage(chatId, `${i18n.t(language, 'error')}: ${errorMsg}`);
+        }
+    });
+
+    // --- КОМАНДА /UNBIND_GROUP (Отвязать группу) ---
+    bot.onText(/\/unbind_group/, async (msg) => {
+        const chatId = msg.chat.id;
+        
+        // Работает только в группах
+        if (!['group', 'supergroup'].includes(msg.chat.type)) return;
+
+        // Получаем язык (для ответов)
+        let language = 'ru-RU';
+        try { language = await getUserLanguage(chatId); } catch (e) {}
+
+        try {
+            // Проверка прав админа
+            const member = await bot.getChatMember(chatId, msg.from.id);
+            if (!['creator', 'administrator'].includes(member.status)) {
+                return bot.sendMessage(chatId, i18n.t(language, 'onlyAdmins'));
+            }
+
+            // Отправляем запрос на бэкенд
+            const res = await axios.post(`${apiUrl}/api/bot/unbind-group`, {
+                chatId: chatId.toString()
+            }, {
+                headers: { 'x-bot-secret': botApiSecret }
+            });
+
+            if (res.data.success) {
+                bot.sendMessage(chatId, `✅ ${res.data.message}`);
+            }
+
         } catch (e) {
             const errorMsg = e.response?.data?.message || e.message;
             bot.sendMessage(chatId, `${i18n.t(language, 'error')}: ${errorMsg}`);

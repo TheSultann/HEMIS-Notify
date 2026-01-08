@@ -58,6 +58,51 @@ module.exports = {
             }
         };
     },
+    // ... после getMainMenu ...
+
+    // ... (твои старые функции) ...
+
+    getAdminMenu: (language = 'ru-RU') => {
+        return {
+            reply_markup: {
+                keyboard: [
+                    [i18n.t(language, 'lessons'), i18n.t(language, 'absences')],
+                    [i18n.t(language, 'myProfile'), i18n.t(language, 'changeLanguage')],
+                    ['📊 Статистика', '📢 Рассылка'] // Добавили кнопку рассылки
+                ],
+                resize_keyboard: true
+            }
+        };
+    },
+
+    // Выбор: кому отправляем?
+    getBroadcastTargetKeyboard: () => {
+        return {
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        { text: '👤 Студентам', callback_data: 'bc_target_students' },
+                        { text: '👥 Группам', callback_data: 'bc_target_groups' }
+                    ],
+                    [{ text: '❌ Отмена', callback_data: 'bc_cancel' }]
+                ]
+            }
+        };
+    },
+
+    // Подтверждение: отправить или нет?
+    getBroadcastConfirmKeyboard: () => {
+        return {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: '✅ Отправить', callback_data: 'bc_send' }],
+                    [{ text: '❌ Отмена', callback_data: 'bc_cancel' }]
+                ]
+            }
+        };
+    },
+
+    // ... остальной код ...
 
     getGuestMenu: (language = 'ru-RU') => {
         return {
