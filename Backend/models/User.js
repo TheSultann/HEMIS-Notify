@@ -2,6 +2,14 @@
 
 const mongoose = require('mongoose');
 
+// Normalize legacy/short language codes to the enum values used across the app
+const normalizeLanguage = (lang) => {
+    if (!lang) return lang; // keep null/undefined
+    if (lang === 'ru') return 'ru-RU';
+    if (lang === 'uz') return 'uz-UZ';
+    return ['ru-RU', 'uz-UZ'].includes(lang) ? lang : 'ru-RU';
+};
+
 const UserSchema = new mongoose.Schema({
     // Логин от HEMIS - уникальный идентификатор
     hemisLogin: { type: String, required: true, unique: true },
@@ -25,5 +33,11 @@ const UserSchema = new mongoose.Schema({
       // createdAt создается автоматически благодаря { timestamps: true }
 
 }, { timestamps: true });
+
+// Fix invalid/legacy language codes before validation (e.g., 'ru' -> 'ru-RU')
+UserSchema.pre('validate', function (next) {
+    this.language = normalizeLanguage(this.language);
+    next();
+});
 
 module.exports = mongoose.model('User', UserSchema);

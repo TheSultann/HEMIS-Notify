@@ -64,6 +64,16 @@ function startBot() {
     })();
 
     const userStates = {};
+    const USER_STATE_TTL_MS = 60 * 60 * 1000; // 1 час
+    setInterval(() => {
+        const now = Date.now();
+        Object.keys(userStates).forEach((id) => {
+            const ts = userStates[id]?.ts;
+            if (ts && now - ts > USER_STATE_TTL_MS) {
+                delete userStates[id];
+            }
+        });
+    }, 10 * 60 * 1000); // проверяем каждые 10 минут
 
     bot.on('message', (msg) => {
         if (msg.chat.type === 'private') trackActivity(msg.chat.id);
@@ -130,6 +140,14 @@ function startBot() {
             console.error('Error setting language:', error);
             return false;
         }
+    }
+
+    // Selects admin or user menu based on chat ID
+    function getMenuKeyboard(chatId, language) {
+        const adminId = process.env.ADMIN_ID;
+        return (String(chatId) === String(adminId))
+            ? keyboards.getAdminMenu(language)
+            : keyboards.getMainMenu(language);
     }
 
     function formatSchedule(schedule, role, dateObject, groupName, language = 'ru-RU') {
@@ -350,13 +368,13 @@ function startBot() {
                 // Проверяем, зарегистрирован ли пользователь
                 try {
                     await axios.get(`${apiUrl}/api/bot/schedule/${chatId}`, { headers: { 'x-bot-secret': botApiSecret } });
-                    await bot.sendMessage(chatId, i18n.t(language, 'welcomeBack'), keyboards.getMainMenu(language));
+                    await bot.sendMessage(chatId, i18n.t(language, 'welcomeBack'), getMenuKeyboard(chatId, language));
                 } catch (error) {
                     // ЕСЛИ НЕ ЗАРЕГИСТРИРОВАН -> БЕСШОВНЫЙ ОНБОРДИНГ
                     await bot.sendMessage(chatId, i18n.t(language, 'welcomeOnboarding'), { parse_mode: 'HTML' });
 
                     // Сразу переводим в режим ожидания логина
-                    userStates[chatId] = { state: 'awaiting_hemis_login' };
+                    userStates[chatId] = { state: 'awaiting_hemis_login', ts: Date.now() };
                     await bot.sendMessage(chatId, i18n.t(language, 'enterHemisLogin'), {
                         parse_mode: 'HTML',
                         ...keyboards.removeKeyboard
@@ -384,7 +402,8 @@ function startBot() {
             // Запоминаем состояние: ждем текст для конкретной цели
             userStates[chatId] = {
                 state: 'awaiting_broadcast_text',
-                target: target
+                target: target,
+                ts: Date.now()
             };
 
             await bot.editMessageText(`✍️ <b>Введите текст сообщения для рассылки (${target === 'students' ? 'Студентам' : 'Группам'}):</b>\n\n<i>Можно использовать HTML теги, ссылки и смайлики.</i>`, {
@@ -480,7 +499,7 @@ function startBot() {
     const loginHandler = async (msg) => {
         const language = await getUserLanguage(msg.chat.id);
         if (msg.chat.type !== 'private') return bot.sendMessage(msg.chat.id, i18n.t(language, 'loginOnlyPrivate'));
-        userStates[msg.chat.id] = { state: 'awaiting_hemis_login' };
+        userStates[msg.chat.id] = { state: 'awaiting_hemis_login', ts: Date.now() };
         bot.sendMessage(msg.chat.id, i18n.t(language, 'enterHemisLogin'), { parse_mode: 'HTML', ...keyboards.removeKeyboard });
     };
 
@@ -620,7 +639,7 @@ function startBot() {
             } catch (error) {
                 // Если не зарегистрирован
                 await bot.sendMessage(chatId, i18n.t(language, 'welcomeOnboarding'), { parse_mode: 'HTML' });
-                userStates[chatId] = { state: 'awaiting_hemis_login' };
+                userStates[chatId] = { state: 'awaiting_hemis_login', ts: Date.now() };
                 await bot.sendMessage(chatId, i18n.t(language, 'enterHemisLogin'), {
                     parse_mode: 'HTML',
                     ...keyboards.removeKeyboard
@@ -747,6 +766,7 @@ function startBot() {
             }
 
             userStates[chatId].state = 'awaiting_broadcast_confirm';
+            userStates[chatId].ts = Date.now();
 
             // Показываем предпросмотр
             const confirmKb = keyboards.getBroadcastConfirmKeyboard();
@@ -784,6 +804,7 @@ function startBot() {
         if (state === 'awaiting_hemis_login') {
             userStates[chatId].hemisLogin = text;
             userStates[chatId].state = 'awaiting_hemis_password';
+            userStates[chatId].ts = Date.now();
             bot.sendMessage(chatId, i18n.t(language, 'enterHemisPassword'), { parse_mode: 'HTML', ...keyboards.removeKeyboard });
         }
         // 3. Ловим пароль HEMIS
@@ -803,7 +824,7 @@ function startBot() {
 
                 if (response.data.success) {
                     bot.deleteMessage(chatId, loading.message_id).catch(() => { });
-                    bot.sendMessage(chatId, `${i18n.t(language, 'accountLinked')}\n\n${i18n.t(language, 'selectAction')}`, keyboards.getMainMenu(language));
+                    bot.sendMessage(chatId, `${i18n.t(language, 'accountLinked')}\n\n${i18n.t(language, 'selectAction')}`, getMenuKeyboard(chatId, language));
                 }
             } catch (error) {
                 bot.deleteMessage(chatId, loading.message_id).catch(() => { });

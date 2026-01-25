@@ -27,6 +27,11 @@ app.get('/', (req, res) => {
     res.send('Mini-Hemis API is running...');
 });
 
+// Healthcheck для мониторинга
+app.get('/health', (req, res) => {
+    res.json({ status: 'ok', timestamp: Date.now() });
+});
+
 // const PORT = process.env.PORT || 5000;
 // app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 

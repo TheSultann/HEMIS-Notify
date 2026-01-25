@@ -8,6 +8,8 @@ const scheduleRouter = require('./schedule');
 const scheduleService = scheduleRouter.scheduleService;
 const { encrypt, decrypt } = require('../utils/crypto');
 
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
 const protectBotRoute = (req, res, next) => {
     const secret = req.headers['x-bot-secret'];
     if (secret && secret === process.env.BOT_API_SECRET) {
@@ -220,6 +222,9 @@ router.post('/check-new-absences', protectBotRoute, async (req, res) => {
         
         const notifications = [];
 
+        let processed = 0;
+        const batchSize = 10; // ограничиваем темп, чтобы не заваливать HEMIS
+
         for (const user of students) {
             try {
                 // Расшифровка пароля
@@ -271,6 +276,13 @@ router.post('/check-new-absences', protectBotRoute, async (req, res) => {
 
             } catch (err) {
                 console.error(`Error checking user ${user.hemisLogin}:`, err.message);
+                // бэкофф, чтобы не долбить HEMIS при ошибках/лимитах
+                await sleep(2000);
+            }
+
+            processed++;
+            if (processed % batchSize === 0) {
+                await sleep(500);
             }
         }
 
@@ -626,25 +638,28 @@ router.get('/stats', protectBotRoute, async (req, res) => {
         const monthAgo = new Date();
         monthAgo.setDate(monthAgo.getDate() - 30);
 
+        // Базовый фильтр: исключаем временных пользователей (temp_*)
+        const baseUserFilter = { hemisLogin: { $not: /^temp_/i } };
+
         // 1. АУДИТОРИЯ
-        const totalUsers = await User.countDocuments({});
-        const blockedUsers = await User.countDocuments({ isBlocked: true });
-        const activeUsers = totalUsers - blockedUsers;
+        const totalUsers = await User.countDocuments(baseUserFilter);
+        const blockedUsers = await User.countDocuments({ ...baseUserFilter, isBlocked: true });
+        const activeUsers = await User.countDocuments({ ...baseUserFilter, isBlocked: { $ne: true } });
 
         // 2. ДИНАМИКА ПРИРОСТА (Новые регистрации)
-        const newToday = await User.countDocuments({ createdAt: { $gte: todayStart } });
-        const newWeek = await User.countDocuments({ createdAt: { $gte: weekAgo } });
+        const newToday = await User.countDocuments({ ...baseUserFilter, createdAt: { $gte: todayStart } });
+        const newWeek = await User.countDocuments({ ...baseUserFilter, createdAt: { $gte: weekAgo } });
 
         // 3. АКТИВНОСТЬ (DAU / WAU)
         // Пользователи, которые нажимали что-то сегодня
-        const dau = await User.countDocuments({ lastActiveAt: { $gte: todayStart } });
+        const dau = await User.countDocuments({ ...baseUserFilter, isBlocked: { $ne: true }, lastActiveAt: { $gte: todayStart } });
         // Пользователи, активные за неделю
-        const wau = await User.countDocuments({ lastActiveAt: { $gte: weekAgo } });
+        const wau = await User.countDocuments({ ...baseUserFilter, isBlocked: { $ne: true }, lastActiveAt: { $gte: weekAgo } });
         // Спящие (не заходили месяц)
-        const sleeping = await User.countDocuments({ lastActiveAt: { $lt: monthAgo } });
+        const sleeping = await User.countDocuments({ ...baseUserFilter, lastActiveAt: { $lt: monthAgo } });
 
         // 4. СИСТЕМА
-        const uniqueGroups = await User.distinct('group', { role: 'student' });
+        const uniqueGroups = await User.distinct('group', { ...baseUserFilter, role: 'student' });
         const connectedChats = await Group.countDocuments({});
 
         res.json({
