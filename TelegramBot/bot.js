@@ -839,6 +839,7 @@ function startBot() {
         try {
             const today = new Date();
             await processAndSendGlobal(today);
+            await processAndSendPersonal(today);
         } catch (error) {
             console.error('Error in morning schedule cron:', error);
         }
@@ -851,6 +852,7 @@ function startBot() {
             const tomorrow = new Date();
             tomorrow.setDate(tomorrow.getDate() + 1);
             await processAndSendGlobal(tomorrow);
+            await processAndSendPersonal(tomorrow);
         } catch (error) {
             console.error('Error in evening schedule cron:', error);
         }
@@ -927,6 +929,48 @@ function startBot() {
                 } catch (e) { console.error(`Ошибка группы ${group.groupName}:`, e.message); }
             }
         } catch (e) { console.error("Ошибка массовой рассылки:", e.message); }
+    }
+
+    // Массовая рассылка в личные чаты подписчиков
+    async function processAndSendPersonal(dateObject) {
+        try {
+            const { data: subscribers } = await axios.get(`${apiUrl}/api/bot/subscribers`, { headers: { 'x-bot-secret': botApiSecret } });
+            for (const sub of subscribers) {
+                const chatId = sub.telegramChatId;
+                try {
+                    // язык пользователя
+                    let language = 'ru-RU';
+                    try {
+                        const { data } = await axios.get(`${apiUrl}/api/bot/language/${chatId}`, { headers: { 'x-bot-secret': botApiSecret } });
+                        language = data.language || 'ru-RU';
+                    } catch (langErr) {}
+
+                    // профиль для имени группы
+                    let groupName = '';
+                    try {
+                        const { data: profileData } = await axios.get(`${apiUrl}/api/bot/me/${chatId}`, { headers: { 'x-bot-secret': botApiSecret } });
+                        groupName = profileData?.data?.group || '';
+                    } catch (profileErr) {}
+
+                    // расписание
+                    const { data: scheduleData } = await axios.get(`${apiUrl}/api/bot/schedule/${chatId}`, { headers: { 'x-bot-secret': botApiSecret } });
+                    const daySchedule = scheduleData.schedule.filter(item => {
+                        const d = new Date(item.lesson_date * 1000);
+                        return d.getFullYear() === dateObject.getFullYear() && d.getMonth() === dateObject.getMonth() && d.getDate() === dateObject.getDate();
+                    });
+
+                    const msgText = formatSchedule(daySchedule, scheduleData.role || 'student', dateObject, groupName, language);
+                    await bot.sendMessage(chatId, msgText, { parse_mode: 'HTML' });
+                } catch (e) {
+                    // Если у пользователя нет доступа/бот заблокирован — пропускаем
+                    if (!String(e.message).includes('Forbidden')) {
+                        console.error(`Ошибка личной рассылки ${chatId}:`, e.message);
+                    }
+                }
+            }
+        } catch (e) {
+            console.error("Ошибка личной массовой рассылки:", e.message);
+        }
     }
 
     bot.onText(/\/bind_group (.+)/, async (msg, match) => {
