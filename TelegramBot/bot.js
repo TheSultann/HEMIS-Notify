@@ -7,10 +7,10 @@ const cron = require('node-cron');
 const keyboards = require('./keyboards');
 const i18n = require('./i18n');
 
-function startBot() {
-    const token = process.env.TELEGRAM_BOT_TOKEN;
-    const apiUrl = process.env.MINI_HEMIS_API_URL;
-    const botApiSecret = process.env.BOT_API_SECRET;
+    function startBot() {
+        const token = process.env.TELEGRAM_BOT_TOKEN;
+        const apiUrl = process.env.MINI_HEMIS_API_URL;
+        const botApiSecret = process.env.BOT_API_SECRET;
 
     if (!token || !apiUrl || !botApiSecret) {
         console.error('Ошибка: одна или несколько переменных окружения не найдены!');
@@ -148,6 +148,70 @@ function startBot() {
         return (String(chatId) === String(adminId))
             ? keyboards.getAdminMenu(language)
             : keyboards.getMainMenu(language);
+    }
+
+    // --- Глобальный троттлинг отправок, чтобы не ловить FloodWait при массовых рассылках ---
+    const GLOBAL_INTERVAL_MS = 60;     // ~16 msg/сек на бота
+    const PER_CHAT_INTERVAL_MS = 1100; // <=1 msg/сек на чат
+    let lastGlobalSend = 0;
+    const lastChatSend = new Map();
+
+    const sleep = (ms) => new Promise(res => setTimeout(res, ms));
+
+    async function waitForSlot(chatId) {
+        const now = Date.now();
+        const waitGlobal = Math.max(0, lastGlobalSend + GLOBAL_INTERVAL_MS - now);
+        const lastChatTime = lastChatSend.get(chatId) || 0;
+        const waitChat = Math.max(0, lastChatTime + PER_CHAT_INTERVAL_MS - now);
+        const wait = Math.max(waitGlobal, waitChat);
+        if (wait > 0) await sleep(wait);
+        const ts = Date.now();
+        lastGlobalSend = ts;
+        lastChatSend.set(chatId, ts);
+    }
+
+    async function sendSafe(chatId, text, options) {
+        let attempts = 0;
+        let lastError = null;
+        while (attempts < 3) {
+            try {
+                await waitForSlot(chatId);
+                return await bot.sendMessage(chatId, text, options);
+            } catch (e) {
+                lastError = e;
+                const retryAfter = e?.response?.body?.parameters?.retry_after;
+                if (e?.response?.statusCode === 429 && retryAfter) {
+                    await sleep(retryAfter * 1000 + 100);
+                    attempts++;
+                    continue;
+                }
+                throw e;
+            }
+        }
+        console.error(`sendSafe: exhausted retries for chat ${chatId}`, lastError?.message || lastError);
+        throw lastError || new Error('sendSafe: retry limit reached');
+    }
+
+    async function pinSafe(chatId, messageId, options) {
+        let attempts = 0;
+        let lastError = null;
+        while (attempts < 3) {
+            try {
+                await waitForSlot(chatId);
+                return await bot.pinChatMessage(chatId, messageId, options);
+            } catch (e) {
+                lastError = e;
+                const retryAfter = e?.response?.body?.parameters?.retry_after;
+                if (e?.response?.statusCode === 429 && retryAfter) {
+                    await sleep(retryAfter * 1000 + 100);
+                    attempts++;
+                    continue;
+                }
+                throw e;
+            }
+        }
+        console.error(`pinSafe: exhausted retries for chat ${chatId}`, lastError?.message || lastError);
+        throw lastError || new Error('pinSafe: retry limit reached');
     }
 
     function formatSchedule(schedule, role, dateObject, groupName, language = 'ru-RU') {
@@ -893,7 +957,7 @@ function startBot() {
                     msg += `\n\n👉 @HEMISnotify_bot`;
 
                     try {
-                        await bot.sendMessage(notify.chatId, msg, { parse_mode: 'HTML' });
+                        await sendSafe(notify.chatId, msg, { parse_mode: 'HTML' });
                     } catch (sendErr) {
                         console.error(`Не удалось отправить NB юзеру ${notify.chatId}:`, sendErr.message);
                     }
@@ -918,8 +982,8 @@ function startBot() {
                     });
                     // Для групповых рассылок используем русский язык по умолчанию
                     const msg = formatSchedule(daySchedule, 'student', dateObject, group.groupName, 'ru-RU');
-                    const sent = await bot.sendMessage(group.telegramChatId, msg, { parse_mode: 'HTML' });
-                    await bot.pinChatMessage(sent.chat.id, sent.message_id, { disable_notification: false });
+                    const sent = await sendSafe(group.telegramChatId, msg, { parse_mode: 'HTML' });
+                    await pinSafe(sent.chat.id, sent.message_id, { disable_notification: false });
                 } catch (e) { console.error(`Ошибка группы ${group.groupName}:`, e.message); }
             }
         } catch (e) { console.error("Ошибка массовой рассылки:", e.message); }
@@ -954,7 +1018,7 @@ function startBot() {
                     });
 
                     const msgText = formatSchedule(daySchedule, scheduleData.role || 'student', dateObject, groupName, language);
-                    await bot.sendMessage(chatId, msgText, { parse_mode: 'HTML' });
+                    await sendSafe(chatId, msgText, { parse_mode: 'HTML' });
                 } catch (e) {
                     // Если у пользователя нет доступа/бот заблокирован — пропускаем
                     if (!String(e.message).includes('Forbidden')) {
