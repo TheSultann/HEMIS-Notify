@@ -151,42 +151,36 @@ function startBot() {
     }
 
     function formatSchedule(schedule, role, dateObject, groupName, language = 'ru-RU') {
-        // Форматирование даты с учетом языка
+        // Современный компактный формат расписания
         const locale = language === 'uz-UZ' ? 'uz-UZ' : 'ru-RU';
         const dateStr = dateObject.toLocaleDateString(locale, { day: 'numeric', month: 'long' });
+        const weekday = dateObject.toLocaleDateString(locale, { weekday: 'long' });
 
-        // Заголовок
-        let message = `<b>${i18n.t(language, 'scheduleFor')} ${dateStr}:</b>\n`;
-
+        let message = `🗓️ <b>${weekday}, ${dateStr}</b>\n`;
         if (groupName) {
             message += `👥 <b>${i18n.t(language, 'group')}:</b> ${groupName}\n`;
         }
         message += `\n`;
 
-        // Если пар нет
         if (!schedule || schedule.length === 0) {
             message += i18n.t(language, 'noLessons');
             message += `\n👉 @HEMISnotify_bot`;
             return message;
         }
 
-        // Сортировка по времени
+        // Сортируем и рисуем карточки слотов
         schedule.sort((a, b) => a.time.localeCompare(b.time));
-
-        // Старый стиль списка
-        schedule.forEach(item => {
+        schedule.forEach((item, idx) => {
+            message += `━ ${idx + 1} ━━━━━━━━━━━━━\n`;
             message += `🕒 <b>${item.time}</b>\n`;
-            message += `📚 ${item.subjectId.name}\n`;
+            message += `📚 <b>${item.subjectId.name}</b>\n`;
             if (item.subjectId.lessonType) message += `🏷️ ${item.subjectId.lessonType}\n`;
-
             if (role === 'teacher') {
                 message += `👥 ${item.subjectId.groupName}\n`;
             } else {
                 message += `👤 ${item.subjectId.teacherName}\n`;
             }
-
             message += `🚪 ${item.subjectId.auditoriumName}\n`;
-            message += `--------------------\n`;
         });
 
         message += `\n👉 @HEMISnotify_bot`;
