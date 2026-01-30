@@ -1,4 +1,4 @@
-// TelegramBot/bot.js
+﻿// TelegramBot/bot.js
 
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
@@ -579,9 +579,9 @@ const i18n = require('./i18n');
             `📚 Guruh chatlari uchun:\n\n` +
             `Administrator chatni akademik guruhga bog'lashi mumkin\n` +
             `buyruq bilan:\n\n` +
-            `/bind_group GURUH_NOMI\n\n` +
+            `/bind_me\n\n` +
             `Misol:\n\n` +
-            `/bind_group 915-23 KII\n\n` +
+            `/bind_me\n\n` +
             `Bog'langanidan keyin jadval avtomatik ravishda guruhga keladi.`
             : `ℹ️ Помощь\n\n` +
             `Этот бот автоматически отправляет ваше расписание из системы HEMIS.\n\n` +
@@ -591,9 +591,9 @@ const i18n = require('./i18n');
             `📚 Для групповых чатов:\n\n` +
             `Администратор может привязать чат к академической группе\n` +
             `командой:\n\n` +
-            `/bind_group НАЗВАНИЕ_ГРУППЫ\n\n` +
+            `/bind_me\n\n` +
             `Пример:\n\n` +
-            `/bind_group 915-23 KII\n\n` +
+            `/bind_me\n\n` +
             `После привязки расписание будет автоматически приходить в группу.`;
 
         bot.sendMessage(chatId, helpText);
@@ -1100,3 +1100,4 @@ const i18n = require('./i18n');
 }
 
 module.exports = { startBot };
+

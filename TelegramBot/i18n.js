@@ -11,7 +11,7 @@ const translations = {
         // Приветствие
         welcome: '👋 Добро пожаловать! Нажмите кнопку внизу для входа.',
         welcomeBack: '👋 С возвращением! Воспользуйтесь меню внизу.',
-        helloGroup: '👋 Привет! Я бот HEMIS. В группах используйте /bind_group.',
+        helloGroup: '👋 Привет! Я бот HEMIS. В группах используйте /bind_me.',
 
         // Расписание
         scheduleFor: 'Расписание на',
@@ -104,7 +104,7 @@ const translations = {
         // Приветствие
         welcome: '👋 Xush kelibsiz! Kirish uchun quyidagi tugmani bosing.',
         welcomeBack: '👋 Xush kelibsiz! Quyidagi menyudan foydalaning.',
-        helloGroup: '👋 Salom! Men HEMIS botiman. Guruhlarda /bind_group dan foydalaning.',
+        helloGroup: '👋 Salom! Men HEMIS botiman. Guruhlarda /bind_me dan foydalaning.',
 
         // Расписание
         scheduleFor: 'Jadval',
