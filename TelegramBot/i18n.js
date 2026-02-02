@@ -47,7 +47,7 @@ const translations = {
 
         // Авторизация
         loginOnlyPrivate: 'Вход доступен только в личных сообщениях.',
-        enterHemisLogin: '🎓 <b>Авторизация в HEMIS</b>\n\n📝 Введите ваш <b>Логин</b> (ID студента):',
+        enterHemisLogin: '🎓 <b>Авторизация в HEMIS</b>\n\n📝 Введите ваш <b>Логин</b> (ID студента):\n\n━━━━━━━━━━━━━━━━━━━━━\n🔒 <i>Ваши данные защищены шифрованием AES-256</i>',
         welcomeOnboarding: `🎓 <b>HEMIS-Notify — Telegram-бот для работы с системой HEMIS</b>\n\n` +
             `━━━━━━━━━━━━━━━━━━━━━\n` +
             `📅 <b>Автоматическое расписание каждый день:</b>\n` +
@@ -58,7 +58,7 @@ const translations = {
             `• Вы можете добавить бота в групповой чат\n` +
             `• Расписание и объявления будут отправляться в тот чат, куда добавлен бот\n` +
             `━━━━━━━━━━━━━━━━━━━━━`,
-        enterHemisPassword: '🔐 <b>Введите пароль</b>\n\nВаш пароль от системы HEMIS:',
+        enterHemisPassword: '🔐 <b>Введите пароль</b>\n\nВаш пароль от системы HEMIS:\n\n━━━━━━━━━━━━━━━━━━━━━\n🛡️ <i>Безопасность гарантирована:</i>\n• Пароль шифруется алгоритмом AES-256\n• Данные хранятся в зашифрованном виде\n• Никто не имеет доступа к вашему паролю',
         checkingData: '🔄 Проверка данных...',
         accountLinked: '✅ Аккаунт успешно привязан.',
         selectAction: 'Выберите нужный раздел в меню 👇',
@@ -140,7 +140,7 @@ const translations = {
 
         // Авторизация
         loginOnlyPrivate: 'Kirish faqat shaxsiy xabarlarda mavjud.',
-        enterHemisLogin: '🎓 <b>HEMIS tizimiga kirish</b>\n\n📝 <b>Login</b>ingizni (Talaba ID) kiriting:',
+        enterHemisLogin: '🎓 <b>HEMIS tizimiga kirish</b>\n\n📝 <b>Login</b>ingizni (Talaba ID) kiriting:\n\n━━━━━━━━━━━━━━━━━━━━━\n🔒 <i>Maʼlumotlaringiz AES-256 shifrlash bilan himoyalangan</i>',
         welcomeOnboarding: `🎓 <b>HEMIS-Notify — HEMIS tizimi bilan ishlovchi Telegram-bot</b>\n\n` +
             `━━━━━━━━━━━━━━━━━━━━━\n` +
             `📅 <b>Har kuni avtomatik jadval:</b>\n` +
@@ -150,7 +150,7 @@ const translations = {
             `👥 <b>Guruhlar uchun:</b>\n` +
             `• Botni guruhga qo‘shishingiz mumkin\n` +
             `• Jadval va e’lonlar bot qo‘shilgan guruh chatiga yuboriladi`,
-        enterHemisPassword: '🔐 <b>Parolni kiriting</b>\n\nHEMIS tizimidagi parolingiz:',
+        enterHemisPassword: '🔐 <b>Parolni kiriting</b>\n\nHEMIS tizimidagi parolingiz:\n\n━━━━━━━━━━━━━━━━━━━━━\n🛡️ <i>Xavfsizlik kafolatlangan:</i>\n• Parol AES-256 algoritmi bilan shifrlangan\n• Maʼlumotlar shifrlangan holda saqlanadi\n• Hech kim parolingizga kira olmaydi',
         checkingData: '🔄 Ma\'lumotlar tekshirilmoqda...',
         accountLinked: '✅ Hisob muvaffaqiyatli bog‘landi.',
         selectAction: 'Kerakli bo‘limni menyudan tanlang 👇',
