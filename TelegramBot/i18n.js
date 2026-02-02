@@ -58,7 +58,7 @@ const translations = {
             `• Вы можете добавить бота в групповой чат\n` +
             `• Расписание и объявления будут отправляться в тот чат, куда добавлен бот\n` +
             `━━━━━━━━━━━━━━━━━━━━━`,
-        enterHemisPassword: '🔐 <b>Введите пароль</b>\n\nВаш пароль от системы HEMIS:\n\n━━━━━━━━━━━━━━━━━━━━━\n🛡️ <i>Безопасность гарантирована:</i>\n• Пароль шифруется алгоритмом AES-256\n• Данные хранятся в зашифрованном виде\n• Никто не имеет доступа к вашему паролю',
+        enterHemisPassword: '🔐 <b>Введите пароль</b>\n\nВаш пароль от системы HEMIS:\n\n━━━━━━━━━━━━━━━━━━━━━\n🛡️ <i>Безопасность гарантирована:</i>\n• Пароль шифруется алгоритмом AES-256\n• Данные хранятся в зашифрованном виде\n• Никто не сможет войти в ваш HEMIS',
         checkingData: '🔄 Проверка данных...',
         accountLinked: '✅ Аккаунт успешно привязан.',
         selectAction: 'Выберите нужный раздел в меню 👇',
@@ -150,7 +150,7 @@ const translations = {
             `👥 <b>Guruhlar uchun:</b>\n` +
             `• Botni guruhga qo‘shishingiz mumkin\n` +
             `• Jadval va e’lonlar bot qo‘shilgan guruh chatiga yuboriladi`,
-        enterHemisPassword: '🔐 <b>Parolni kiriting</b>\n\nHEMIS tizimidagi parolingiz:\n\n━━━━━━━━━━━━━━━━━━━━━\n🛡️ <i>Xavfsizlik kafolatlangan:</i>\n• Parol AES-256 algoritmi bilan shifrlangan\n• Maʼlumotlar shifrlangan holda saqlanadi\n• Hech kim parolingizga kira olmaydi',
+        enterHemisPassword: '🔐 <b>Parolni kiriting</b>\n\nHEMIS tizimidagi parolingiz:\n\n━━━━━━━━━━━━━━━━━━━━━\n🛡️ <i>Xavfsizlik kafolatlangan:</i>\n• Parol AES-256 algoritmi bilan shifrlangan\n• Maʼlumotlar shifrlangan holda saqlanadi\n• Hech kim HEMIS hisobingizga kira olmaydi',
         checkingData: '🔄 Ma\'lumotlar tekshirilmoqda...',
         accountLinked: '✅ Hisob muvaffaqiyatli bog‘landi.',
         selectAction: 'Kerakli bo‘limni menyudan tanlang 👇',
