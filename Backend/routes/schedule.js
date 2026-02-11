@@ -53,13 +53,61 @@ async function getCurrentSemester(hemisToken, language = 'ru-RU') {
             method: 'GET',
             headers: { 'Authorization': `Bearer ${hemisToken}`, 'Accept': 'application/json', 'Origin': 'https://student.urdu.uz' }
         });
-        if (response.status !== 200) return null;
+        if (response.status !== 200) {
+            console.log('Profile unavailable, falling back to semesters list');
+            return await getCurrentSemesterFromList(hemisToken, language);
+        }
         const data = await response.json();
         const semesterCode = data?.data?.semester?.code;
         if (semesterCode) return semesterCode;
-        return null;
+
+        console.log('Profile returned no semester, falling back to semesters list');
+        return await getCurrentSemesterFromList(hemisToken, language);
     } catch (error) {
         console.error('Failed to fetch user profile data:', error);
+        return await getCurrentSemesterFromList(hemisToken, language);
+    }
+}
+
+// Получение текущего семестра через /v1/education/semesters (надёжный fallback)
+async function getCurrentSemesterFromList(hemisToken, language = 'ru-RU') {
+    const langParam = language ? `?l=${language}` : '';
+    const url = `${process.env.HEMIS_API_BASE}/v1/education/semesters${langParam}`;
+
+    try {
+        const response = await fetch(url, {
+            method: 'GET',
+            headers: { 'Authorization': `Bearer ${hemisToken}`, 'Accept': 'application/json', 'Origin': 'https://student.urdu.uz' }
+        });
+        if (response.status !== 200) return null;
+        const data = await response.json();
+        if (!data.success || !data.data || !Array.isArray(data.data)) return null;
+
+        // 1. Ищем семестр с current: true
+        const currentSemester = data.data.find(s => s.current === true);
+        if (currentSemester) {
+            console.log(`Found current semester from list: code=${currentSemester.code}, name=${currentSemester.name}`);
+            return currentSemester.code;
+        }
+
+        // 2. Ищем семестр, у которого есть неделя с current: true
+        for (const semester of data.data) {
+            if (semester.weeks && semester.weeks.some(w => w.current === true)) {
+                console.log(`Found semester with current week: code=${semester.code}, name=${semester.name}`);
+                return semester.code;
+            }
+        }
+
+        // 3. Берём последний семестр (самый свежий) как крайний вариант
+        const lastSemester = data.data[data.data.length - 1];
+        if (lastSemester) {
+            console.log(`No current semester found, using last: code=${lastSemester.code}, name=${lastSemester.name}`);
+            return lastSemester.code;
+        }
+
+        return null;
+    } catch (error) {
+        console.error('Failed to fetch semesters list:', error);
         return null;
     }
 }
@@ -172,6 +220,7 @@ async function getAttendanceFromHemis(hemisToken, semesterCode, language = 'ru-R
 router.scheduleService = {
     performHemisLogin,
     getCurrentSemester,
+    getCurrentSemesterFromList,
     getScheduleFromHemis,
     getAttendanceFromHemis
 };

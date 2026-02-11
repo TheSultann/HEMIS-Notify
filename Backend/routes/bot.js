@@ -470,6 +470,18 @@ async function getGroupSchedule(groupName) {
         throw { status: 500, message: 'Не удалось получить расписание из HEMIS' };
     }
 
+    // Если расписание пустое — возможно профиль вернул старый семестр, пробуем через список
+    if (Array.isArray(scheduleResult) && scheduleResult.length === 0) {
+        const listSemester = await scheduleService.getCurrentSemesterFromList(hemisToken, userLanguage);
+        if (listSemester && listSemester !== semesterCode) {
+            console.log(`Schedule empty with semester ${semesterCode}, retrying with ${listSemester} from semesters list`);
+            const retryResult = await scheduleService.getScheduleFromHemis(hemisToken, user, listSemester, userLanguage);
+            if (retryResult && !retryResult.error) {
+                return { schedule: retryResult, role: 'student' };
+            }
+        }
+    }
+
     return { schedule: scheduleResult, role: 'student' };
 }
 
@@ -545,6 +557,18 @@ router.get('/schedule/:chatId', protectBotRoute, async (req, res) => {
 
         if (scheduleResult === null || scheduleResult?.error) {
             return res.status(500).json({ message: 'Failed to fetch schedule from HEMIS' });
+        }
+
+        // Если расписание пустое — возможно профиль вернул старый семестр, пробуем через список
+        if (Array.isArray(scheduleResult) && scheduleResult.length === 0) {
+            const listSemester = await scheduleService.getCurrentSemesterFromList(hemisToken, userLanguage);
+            if (listSemester && listSemester !== semesterCode) {
+                console.log(`Schedule empty with semester ${semesterCode}, retrying with ${listSemester} from semesters list`);
+                const retryResult = await scheduleService.getScheduleFromHemis(hemisToken, user, listSemester, userLanguage);
+                if (retryResult && !retryResult.error) {
+                    return res.json({ schedule: retryResult, role: user.role });
+                }
+            }
         }
 
         res.json({ schedule: scheduleResult, role: user.role });
