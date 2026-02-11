@@ -7,10 +7,10 @@ const cron = require('node-cron');
 const keyboards = require('./keyboards');
 const i18n = require('./i18n');
 
-    function startBot() {
-        const token = process.env.TELEGRAM_BOT_TOKEN;
-        const apiUrl = process.env.MINI_HEMIS_API_URL;
-        const botApiSecret = process.env.BOT_API_SECRET;
+function startBot() {
+    const token = process.env.TELEGRAM_BOT_TOKEN;
+    const apiUrl = process.env.MINI_HEMIS_API_URL;
+    const botApiSecret = process.env.BOT_API_SECRET;
 
     if (!token || !apiUrl || !botApiSecret) {
         console.error('Ошибка: одна или несколько переменных окружения не найдены!');
@@ -34,7 +34,7 @@ const i18n = require('./i18n');
                 { command: '/schedule_today', description: '📅 Расписание группы' },
                 { command: '/schedule_tomorrow', description: '📅 Расписание на завтра' },
                 { command: '/bind_me', description: '🔗 Привязать мою группу' },
-                { command: '/unbind_group', description: '❌ Отвязать группу' } 
+                { command: '/unbind_group', description: '❌ Отвязать группу' }
             ], { scope: { type: 'all_group_chats' } });
 
             // 3. Для АДМИНОВ групп (добавляем Unbind)
@@ -44,7 +44,7 @@ const i18n = require('./i18n');
                 { command: '/schedule_tomorrow', description: '📅 Расписание на завтра' },
                 { command: '/bind_me', description: '🔗 Привязать мою группу' },
                 { command: '/unbind_group', description: '❌ Отвязать группу' } // <--- НОВАЯ
-                
+
             ], { scope: { type: 'all_chat_administrators' } });
 
             // 4. Для ЛИЧКИ (полный доступ)
@@ -102,7 +102,7 @@ const i18n = require('./i18n');
                     chatId: u.chat.id.toString(),
                     isBlocked: true
                 }, { headers: { 'x-bot-secret': botApiSecret } });
-            } catch (e) {}
+            } catch (e) { }
         } else if (u.new_chat_member.status === 'member') {
             // Юзер разблокировал бота -> шлем isBlocked: false
             try {
@@ -110,7 +110,7 @@ const i18n = require('./i18n');
                     chatId: u.chat.id.toString(),
                     isBlocked: false
                 }, { headers: { 'x-bot-secret': botApiSecret } });
-            } catch (e) {}
+            } catch (e) { }
         }
     });
 
@@ -478,55 +478,55 @@ const i18n = require('./i18n');
             await bot.sendMessage(chatId, '❌ Рассылка отменена.');
         }
 
-       // 3. Подтверждение отправки
-       else if (data === 'bc_send') {
-        const draft = userStates[chatId];
-        if (!draft || (!draft.text && !draft.photo)) {
-            return bot.sendMessage(chatId, 'Ошибка: данные рассылки устарели.');
-        }
-
-        // Удаляем превью (сообщение с кнопкой), чтобы было красиво
-        await bot.deleteMessage(chatId, query.message.message_id).catch(() => {});
-        const loadingMsg = await bot.sendMessage(chatId, '⏳ <b>Начинаю рассылку...</b>', { parse_mode: 'HTML' });
-
-        try {
-            // Получаем список ID
-            const endpoint = draft.target === 'students' ? '/api/bot/subscribers' : '/api/bot/groups';
-            const { data: list } = await axios.get(`${apiUrl}${endpoint}`, {
-                headers: { 'x-bot-secret': botApiSecret }
-            });
-
-            let successCount = 0;
-            let failCount = 0;
-
-            // Отправляем
-            for (const item of list) {
-                try {
-                    if (draft.photo) {
-                        // Если есть фото
-                        await bot.sendPhoto(item.telegramChatId, draft.photo, { caption: draft.text, parse_mode: 'HTML' });
-                    } else {
-                        // Если только текст
-                        await bot.sendMessage(item.telegramChatId, draft.text, { parse_mode: 'HTML' });
-                    }
-                    successCount++;
-                } catch (e) {
-                    failCount++;
-                }
-                // Пауза 30мс
-                await new Promise(resolve => setTimeout(resolve, 30));
+        // 3. Подтверждение отправки
+        else if (data === 'bc_send') {
+            const draft = userStates[chatId];
+            if (!draft || (!draft.text && !draft.photo)) {
+                return bot.sendMessage(chatId, 'Ошибка: данные рассылки устарели.');
             }
 
-            delete userStates[chatId];
-            
-            await bot.deleteMessage(chatId, loadingMsg.message_id).catch(() => {});
-            await bot.sendMessage(chatId, `✅ <b>Рассылка завершена!</b>\n\n📨 Отправлено: ${successCount}\n🚫 Ошибок/Блоков: ${failCount}`, { parse_mode: 'HTML' });
+            // Удаляем превью (сообщение с кнопкой), чтобы было красиво
+            await bot.deleteMessage(chatId, query.message.message_id).catch(() => { });
+            const loadingMsg = await bot.sendMessage(chatId, '⏳ <b>Начинаю рассылку...</b>', { parse_mode: 'HTML' });
 
-        } catch (error) {
-            console.error('Broadcast error:', error);
-            await bot.sendMessage(chatId, '❌ Ошибка при выполнении рассылки.');
+            try {
+                // Получаем список ID
+                const endpoint = draft.target === 'students' ? '/api/bot/subscribers' : '/api/bot/groups';
+                const { data: list } = await axios.get(`${apiUrl}${endpoint}`, {
+                    headers: { 'x-bot-secret': botApiSecret }
+                });
+
+                let successCount = 0;
+                let failCount = 0;
+
+                // Отправляем
+                for (const item of list) {
+                    try {
+                        if (draft.photo) {
+                            // Если есть фото
+                            await bot.sendPhoto(item.telegramChatId, draft.photo, { caption: draft.text, parse_mode: 'HTML' });
+                        } else {
+                            // Если только текст
+                            await bot.sendMessage(item.telegramChatId, draft.text, { parse_mode: 'HTML' });
+                        }
+                        successCount++;
+                    } catch (e) {
+                        failCount++;
+                    }
+                    // Пауза 30мс
+                    await new Promise(resolve => setTimeout(resolve, 30));
+                }
+
+                delete userStates[chatId];
+
+                await bot.deleteMessage(chatId, loadingMsg.message_id).catch(() => { });
+                await bot.sendMessage(chatId, `✅ <b>Рассылка завершена!</b>\n\n📨 Отправлено: ${successCount}\n🚫 Ошибок/Блоков: ${failCount}`, { parse_mode: 'HTML' });
+
+            } catch (error) {
+                console.error('Broadcast error:', error);
+                await bot.sendMessage(chatId, '❌ Ошибка при выполнении рассылки.');
+            }
         }
-    }
     });
 
     // 4. Кнопка "Мой профиль" / "Mening profilim"
@@ -708,46 +708,46 @@ const i18n = require('./i18n');
         }
     });
 
-   // Кнопка "📊 Статистика" (Расширенная)
-   bot.onText(/📊 Статистика/, async (msg) => {
-    const chatId = msg.chat.id;
-    const ADMIN_ID = process.env.ADMIN_ID;
+    // Кнопка "📊 Статистика" (Расширенная)
+    bot.onText(/📊 Статистика/, async (msg) => {
+        const chatId = msg.chat.id;
+        const ADMIN_ID = process.env.ADMIN_ID;
 
-    if (String(chatId) !== String(ADMIN_ID)) return;
+        if (String(chatId) !== String(ADMIN_ID)) return;
 
-    try {
-        const { data } = await axios.get(`${apiUrl}/api/bot/stats`, {
-            headers: { 'x-bot-secret': botApiSecret }
-        });
+        try {
+            const { data } = await axios.get(`${apiUrl}/api/bot/stats`, {
+                headers: { 'x-bot-secret': botApiSecret }
+            });
 
-        // Красивое форматирование
-        const { audience, growth, activity, system } = data;
-        
-        const text = `📊 <b>РАСШИРЕННАЯ СТАТИСТИКА</b>\n\n` +
-            `👥 <b>Аудитория:</b>\n` +
-            `• Всего в базе: <b>${audience.total}</b>\n` +
-            `• Живые: <b>${audience.active}</b>\n` +
-            `• 💀 Блок: <b>${audience.blocked}</b>\n\n` +
-            
-            `📈 <b>Прирост (Сегодня / Неделя):</b>\n` +
-            `• Новые: <b>+${growth.today}</b> / <b>+${growth.week}</b>\n\n` +
-            
-            `🔥 <b>Активность:</b>\n` +
-            `• Сегодня (DAU): <b>${activity.dau}</b>\n` +
-            `• За неделю (WAU): <b>${activity.wau}</b>\n` +
-            `• 💤 Спящие (>30д): <b>${activity.sleeping}</b>\n\n` +
-            
-            `💻 <b>Система:</b>\n` +
-            `• Групп: <b>${system.groups}</b>\n` +
-            `• Чатов: <b>${system.chats}</b>`;
+            // Красивое форматирование
+            const { audience, growth, activity, system } = data;
 
-        bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
+            const text = `📊 <b>РАСШИРЕННАЯ СТАТИСТИКА</b>\n\n` +
+                `👥 <b>Аудитория:</b>\n` +
+                `• Всего в базе: <b>${audience.total}</b>\n` +
+                `• Живые: <b>${audience.active}</b>\n` +
+                `• 💀 Блок: <b>${audience.blocked}</b>\n\n` +
 
-    } catch (error) {
-        console.error('Stats error:', error.message);
-        bot.sendMessage(chatId, 'Ошибка получения статистики.');
-    }
-});
+                `📈 <b>Прирост (Сегодня / Неделя):</b>\n` +
+                `• Новые: <b>+${growth.today}</b> / <b>+${growth.week}</b>\n\n` +
+
+                `🔥 <b>Активность:</b>\n` +
+                `• Сегодня (DAU): <b>${activity.dau}</b>\n` +
+                `• За неделю (WAU): <b>${activity.wau}</b>\n` +
+                `• 💤 Спящие (>30д): <b>${activity.sleeping}</b>\n\n` +
+
+                `💻 <b>Система:</b>\n` +
+                `• Групп: <b>${system.groups}</b>\n` +
+                `• Чатов: <b>${system.chats}</b>`;
+
+            bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
+
+        } catch (error) {
+            console.error('Stats error:', error.message);
+            bot.sendMessage(chatId, 'Ошибка получения статистики.');
+        }
+    });
 
     // Кнопка "📢 Рассылка" (Только Админ)
     bot.onText(/📢 Рассылка/, async (msg) => {
@@ -795,7 +795,7 @@ const i18n = require('./i18n');
                 // Если юзер не найден в боте
                 return bot.sendMessage(groupChatId, `❌ Вы не зарегистрированы в боте.\n\nЗайдите в ЛС к @HEMISnotify_bot, нажмите /start и войдите в систему, затем вернитесь сюда и нажмите /bind_me.`);
             }
-            
+
             const errorMsg = e.response?.data?.message || e.message;
             bot.sendMessage(groupChatId, `❌ Ошибка: ${errorMsg}`);
         }
@@ -813,11 +813,11 @@ const i18n = require('./i18n');
         // 1. ЛОВИМ КОНТЕНТ ДЛЯ РАССЫЛКИ (Текст или Фото)
         if (state === 'awaiting_broadcast_text') {
             const target = userStates[chatId].target;
-            
+
             // Сохраняем данные
             userStates[chatId].text = text || ''; // Текст может быть пустым, если просто фото
             userStates[chatId].photo = msg.photo ? msg.photo[msg.photo.length - 1].file_id : null; // ID самой большой фотки
-            
+
             // Если прислали ерунду (ни текста, ни фото)
             if (!userStates[chatId].text && !userStates[chatId].photo) {
                 return bot.sendMessage(chatId, '❌ Отправьте текст или фото.');
@@ -848,11 +848,11 @@ const i18n = require('./i18n');
         const guestMenuRu = keyboards.getGuestMenu('ru-RU').reply_markup.keyboard;
         const guestMenuUz = keyboards.getGuestMenu('uz-UZ').reply_markup.keyboard;
         const adminMenuRu = keyboards.getAdminMenu('ru-RU').reply_markup.keyboard;
-        
+
         const allButtons = new Set([
-            ...mainMenuRu, ...mainMenuUz, 
+            ...mainMenuRu, ...mainMenuUz,
             ...guestMenuRu, ...guestMenuUz,
-            ...adminMenuRu 
+            ...adminMenuRu
         ].flat());
 
         if (allButtons.has(text)) return;
@@ -916,8 +916,8 @@ const i18n = require('./i18n');
         }
     }, { scheduled: true, timezone: "Asia/Tashkent" });
 
-    // --- ПРОВЕРКА НОВЫХ NB (Каждые 30 минут) ---
-    cron.schedule('*/30 * * * *', async () => {
+    // --- ПРОВЕРКА НОВЫХ NB (Каждые 15 минут с 08:00 до 22:00) ---
+    cron.schedule('*/15 8-22 * * *', async () => {
         try {
             // Запрашиваем у бэкенда список тех, у кого новые NB
             const response = await axios.post(`${apiUrl}/api/bot/check-new-absences`, {}, {
@@ -1001,14 +1001,14 @@ const i18n = require('./i18n');
                     try {
                         const { data } = await axios.get(`${apiUrl}/api/bot/language/${chatId}`, { headers: { 'x-bot-secret': botApiSecret } });
                         language = data.language || 'ru-RU';
-                    } catch (langErr) {}
+                    } catch (langErr) { }
 
                     // профиль для имени группы
                     let groupName = '';
                     try {
                         const { data: profileData } = await axios.get(`${apiUrl}/api/bot/me/${chatId}`, { headers: { 'x-bot-secret': botApiSecret } });
                         groupName = profileData?.data?.group || '';
-                    } catch (profileErr) {}
+                    } catch (profileErr) { }
 
                     // расписание
                     const { data: scheduleData } = await axios.get(`${apiUrl}/api/bot/schedule/${chatId}`, { headers: { 'x-bot-secret': botApiSecret } });
@@ -1066,13 +1066,13 @@ const i18n = require('./i18n');
     // --- КОМАНДА /UNBIND_GROUP (Отвязать группу) ---
     bot.onText(/\/unbind_group/, async (msg) => {
         const chatId = msg.chat.id;
-        
+
         // Работает только в группах
         if (!['group', 'supergroup'].includes(msg.chat.type)) return;
 
         // Получаем язык (для ответов)
         let language = 'ru-RU';
-        try { language = await getUserLanguage(chatId); } catch (e) {}
+        try { language = await getUserLanguage(chatId); } catch (e) { }
 
         try {
             // Проверка прав админа

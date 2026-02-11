@@ -12,7 +12,10 @@ async function performHemisLogin(hemisLogin, hemisPassword) {
         });
         const loginData = await loginResponse.json();
         if (!loginData.success || !loginData.data?.token) {
-            console.log('HEMIS Login failed:', loginData);
+            // Не логируем 401 (неверный пароль) — это ожидаемо для студентов, сменивших пароль
+            if (loginData.code !== 401) {
+                console.log('HEMIS Login failed:', loginData);
+            }
             return null;
         }
         const token = loginData.data.token;
@@ -25,7 +28,7 @@ async function performHemisLogin(hemisLogin, hemisPassword) {
             console.log('HEMIS Get Profile failed:', profileData);
             return null;
         }
-        
+
         return {
             token,
             profileData: {
@@ -44,7 +47,7 @@ async function getCurrentSemester(hemisToken, language = 'ru-RU') {
     const endpoint = '/v1/account/me';
     const langParam = language ? `?l=${language}` : '';
     const url = `${process.env.HEMIS_API_BASE}${endpoint}${langParam}`;
-    
+
     try {
         const response = await fetch(url, {
             method: 'GET',
@@ -71,15 +74,13 @@ async function getScheduleFromHemis(hemisToken, user, semesterCode, language = '
             method: 'GET',
             headers: { 'Authorization': `Bearer ${hemisToken}`, 'Accept': 'application/json', 'Origin': 'https://student.urdu.uz' }
         });
-        
-        console.log(`Trying Schedule Endpoint: ${endpoint}, Response Status:`, response.status);
-        const data = await response.json();
 
         if (response.status === 401) return { error: 'unauthorized' };
+        const data = await response.json();
         if (!data.success || !data.data) return null;
-        
+
         const scheduleData = data.data.map(item => ({
-            lesson_date: item.lesson_date, 
+            lesson_date: item.lesson_date,
             time: item.lessonPair?.start_time || 'Unknown',
             subjectId: {
                 name: item.subject?.name || 'Unknown Subject',
@@ -89,7 +90,7 @@ async function getScheduleFromHemis(hemisToken, user, semesterCode, language = '
                 lessonType: item.trainingType?.name || ''
             }
         }));
-        
+
         return scheduleData;
     } catch (error) {
         console.error(`Failed to get schedule from Endpoint:`, error);
@@ -120,7 +121,7 @@ async function getAttendanceFromHemis(hemisToken, semesterCode, language = 'ru-R
 
         data.data.forEach(item => {
             const hours = (item.absent_on || 0) + (item.absent_off || 0);
-            
+
             if (hours > 0) {
                 totalHours += hours;
                 const isJustified = item.explicable === true;
@@ -129,7 +130,7 @@ async function getAttendanceFromHemis(hemisToken, semesterCode, language = 'ru-R
                 else unjustifiedHours += hours;
 
                 const subjectName = item.subject?.name || 'Неизвестный предмет';
-                
+
                 if (!subjectsMap[subjectName]) {
                     subjectsMap[subjectName] = {
                         name: subjectName,
@@ -154,11 +155,11 @@ async function getAttendanceFromHemis(hemisToken, semesterCode, language = 'ru-R
             return sub;
         });
 
-        return { 
-            totalHours, 
-            justifiedHours, 
-            unjustifiedHours, 
-            subjects 
+        return {
+            totalHours,
+            justifiedHours,
+            unjustifiedHours,
+            subjects
         };
 
     } catch (error) {

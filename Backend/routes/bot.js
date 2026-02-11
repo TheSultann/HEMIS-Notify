@@ -30,7 +30,7 @@ router.post('/register', protectBotRoute, async (req, res) => {
         if (!hemisAuthData || !hemisAuthData.token) {
             return res.status(401).json({ message: 'Invalid HEMIS login or password' });
         }
-        
+
         const { token: hemisToken, profileData } = hemisAuthData;
         const encryptedPassword = encrypt(hemisPassword);
 
@@ -38,7 +38,7 @@ router.post('/register', protectBotRoute, async (req, res) => {
         let initialAbsentHours = 0;
         let user = await User.findOne({ telegramChatId: chatId });
         const userLanguage = user?.language || 'ru-RU'; // Используем сохраненный язык или по умолчанию русский
-        
+
         if (profileData.isStudent) {
             const semesterCode = await scheduleService.getCurrentSemester(hemisToken, userLanguage);
             if (semesterCode) {
@@ -54,7 +54,7 @@ router.post('/register', protectBotRoute, async (req, res) => {
             // Проверяем, это временный пользователь (созданный при выборе языка) или уже зарегистрированный
             const isTempUser = user.hemisLogin && user.hemisLogin.startsWith('temp_');
             const existingLanguage = user.language; // Сохраняем язык
-            
+
             user.hemisLogin = hemisLogin;
             user.hemisPassword = encryptedPassword;
             user.hemisToken = hemisToken;
@@ -62,7 +62,7 @@ router.post('/register', protectBotRoute, async (req, res) => {
             user.role = profileData.isStudent ? 'student' : 'teacher';
             user.group = profileData.groupName;
             user.lastKnownAbsentHours = initialAbsentHours;
-            
+
             // Сохраняем язык, если он был установлен
             if (existingLanguage) {
                 user.language = existingLanguage;
@@ -81,7 +81,7 @@ router.post('/register', protectBotRoute, async (req, res) => {
                 // Язык по умолчанию null - будет выбран при первом запуске
             });
         }
-        
+
         await user.save();
         res.status(200).json({ success: true, message: `Welcome, ${profileData.fullName}! Account linked successfully.` });
 
@@ -101,8 +101,8 @@ router.post('/bind-group', protectBotRoute, async (req, res) => {
     }
 
     try {
-        const studentInGroup = await User.findOne({ 
-            group: { $regex: groupName, $options: 'i' } 
+        const studentInGroup = await User.findOne({
+            group: { $regex: groupName, $options: 'i' }
         });
 
         if (!studentInGroup) {
@@ -119,7 +119,7 @@ router.post('/bind-group', protectBotRoute, async (req, res) => {
             }
             group = new Group({ groupName, telegramChatId: chatId });
         }
-        
+
         await group.save();
         res.status(200).json({ success: true, message: `Группа "${groupName}" успешно привязана к этому чату.` });
 
@@ -135,7 +135,7 @@ router.post('/bind-group', protectBotRoute, async (req, res) => {
 // --- ЭНДПОИНТ: Отвязка группы (Unbind) ---
 router.post('/unbind-group', protectBotRoute, async (req, res) => {
     const { chatId } = req.body;
-    
+
     if (!chatId) {
         return res.status(400).json({ message: 'Chat ID is required' });
     }
@@ -147,7 +147,7 @@ router.post('/unbind-group', protectBotRoute, async (req, res) => {
         if (!deletedGroup) {
             return res.status(404).json({ message: 'Этот чат не был привязан ни к одной группе.' });
         }
-        
+
         res.status(200).json({ success: true, message: `Группа "${deletedGroup.groupName}" успешно отвязана.` });
 
     } catch (error) {
@@ -174,7 +174,7 @@ router.post('/check-new-absences', protectBotRoute, async (req, res) => {
         // ЕСЛИ НАШЛИ РАЗНИЦУ В БОЛЬШУЮ СТОРОНУ
         if (currentTotal > lastKnown) {
             const diff = currentTotal - lastKnown;
-            
+
             // Находим предмет, по которому прилетел NB (последний по дате)
             // Сортируем все детали всех предметов по дате убывания
             let allDetails = [];
@@ -188,7 +188,7 @@ router.post('/check-new-absences', protectBotRoute, async (req, res) => {
                 });
             }
             allDetails.sort((a, b) => b.date - a.date); // Самые свежие сверху
-            
+
             const latestNB = allDetails[0]; // Самый последний NB
 
             notifications.push({
@@ -219,11 +219,8 @@ router.post('/check-new-absences', protectBotRoute, async (req, res) => {
     try {
         // Ищем всех студентов, у которых есть chatID
         const students = await User.find({ role: 'student', telegramChatId: { $ne: null } });
-        
-        const notifications = [];
 
-        let processed = 0;
-        const batchSize = 10; // ограничиваем темп, чтобы не заваливать HEMIS
+        const notifications = [];
 
         for (const user of students) {
             try {
@@ -234,7 +231,7 @@ router.post('/check-new-absences', protectBotRoute, async (req, res) => {
 
                 // 1. Получаем семестр (с авто-обновлением токена)
                 let semesterCode = await scheduleService.getCurrentSemester(hemisToken, userLanguage);
-                
+
                 if (!semesterCode) {
                     // Ре-логин
                     const authData = await scheduleService.performHemisLogin(user.hemisLogin, plainPassword);
@@ -250,11 +247,11 @@ router.post('/check-new-absences', protectBotRoute, async (req, res) => {
 
                 // 2. Получаем посещаемость
                 const attData = await scheduleService.getAttendanceFromHemis(hemisToken, semesterCode, userLanguage);
-                
+
                 // Если ошибка авторизации при получении данных
                 if (attData?.error === 'unauthorized') {
-                     const authData = await scheduleService.performHemisLogin(user.hemisLogin, plainPassword);
-                     if (authData) {
+                    const authData = await scheduleService.performHemisLogin(user.hemisLogin, plainPassword);
+                    if (authData) {
                         hemisToken = authData.token;
                         user.hemisToken = hemisToken;
                         await user.save();
@@ -265,7 +262,7 @@ router.post('/check-new-absences', protectBotRoute, async (req, res) => {
                         } else if (retryData === null) {
                             console.log(`Failed to get attendance for user ${user.hemisLogin} after re-login`);
                         }
-                     }
+                    }
                 } else if (attData && !attData.error) {
                     await processAttendanceDiff(user, attData, notifications);
                 } else if (attData === null) {
@@ -280,10 +277,7 @@ router.post('/check-new-absences', protectBotRoute, async (req, res) => {
                 await sleep(2000);
             }
 
-            processed++;
-            if (processed % batchSize === 0) {
-                await sleep(500);
-            }
+            await sleep(1500); // Пауза 1.5 сек после каждого студента для равномерной нагрузки
         }
 
         res.json({ success: true, notifications });
@@ -320,11 +314,11 @@ router.get('/me/:chatId', protectBotRoute, async (req, res) => {
         const { chatId } = req.params;
         // Возвращаем только нужные поля, пароль и токен не нужны
         const user = await User.findOne({ telegramChatId: chatId }).select('fullName group hemisLogin role language -_id');
-        
+
         if (!user) {
             return res.status(404).json({ message: 'User not found' });
         }
-        
+
         res.json({ success: true, data: user });
     } catch (error) {
         console.error('Get profile error:', error);
@@ -337,11 +331,11 @@ router.get('/language/:chatId', protectBotRoute, async (req, res) => {
     try {
         const { chatId } = req.params;
         const user = await User.findOne({ telegramChatId: chatId }).select('language -_id');
-        
+
         if (!user) {
             return res.status(404).json({ message: 'User not found' });
         }
-        
+
         res.json({ success: true, language: user.language || null });
     } catch (error) {
         console.error('Get language error:', error);
@@ -353,17 +347,17 @@ router.get('/language/:chatId', protectBotRoute, async (req, res) => {
 router.post('/set-language', protectBotRoute, async (req, res) => {
     try {
         const { chatId, language } = req.body;
-        
+
         if (!chatId || !language) {
             return res.status(400).json({ message: 'ChatId and Language are required' });
         }
-        
+
         if (!['ru-RU', 'uz-UZ'].includes(language)) {
             return res.status(400).json({ message: 'Invalid language. Must be ru-RU or uz-UZ' });
         }
-        
+
         let user = await User.findOne({ telegramChatId: chatId });
-        
+
         if (!user) {
             // Создаем пользователя с минимальными данными, если его нет
             // Это нужно для сохранения языка до регистрации
@@ -376,9 +370,9 @@ router.post('/set-language', protectBotRoute, async (req, res) => {
         } else {
             user.language = language;
         }
-        
+
         await user.save();
-        
+
         res.json({ success: true, message: 'Language updated successfully' });
     } catch (error) {
         if (error.code === 11000) {
@@ -396,10 +390,10 @@ router.post('/set-language', protectBotRoute, async (req, res) => {
 });
 
 async function getGroupSchedule(groupName) {
-    const user = await User.findOne({ 
-        group: { $regex: groupName, $options: 'i' } 
+    const user = await User.findOne({
+        group: { $regex: groupName, $options: 'i' }
     });
-    
+
     if (!user) {
         throw { status: 404, message: `Не найден зарегистрированный студент для группы ${groupName}.` };
     }
@@ -415,7 +409,7 @@ async function getGroupSchedule(groupName) {
         user.hemisToken = hemisToken;
         await user.save();
     }
-    
+
     const semesterCode = await scheduleService.getCurrentSemester(hemisToken, userLanguage);
     if (!semesterCode) {
         const authData = await scheduleService.performHemisLogin(user.hemisLogin, plainPassword);
@@ -424,8 +418,8 @@ async function getGroupSchedule(groupName) {
         user.hemisToken = hemisToken;
         await user.save();
         const newSemesterCode = await scheduleService.getCurrentSemester(hemisToken, userLanguage);
-        if(!newSemesterCode) throw { status: 400, message: 'Не удалось определить семестр.' };
-        
+        if (!newSemesterCode) throw { status: 400, message: 'Не удалось определить семестр.' };
+
         const scheduleResult = await scheduleService.getScheduleFromHemis(hemisToken, user, newSemesterCode, userLanguage);
         return { schedule: scheduleResult, role: 'student' };
     }
@@ -444,7 +438,7 @@ async function getGroupSchedule(groupName) {
     if (scheduleResult === null || scheduleResult?.error) {
         throw { status: 500, message: 'Не удалось получить расписание из HEMIS' };
     }
-    
+
     return { schedule: scheduleResult, role: 'student' };
 }
 
@@ -491,7 +485,7 @@ router.get('/schedule/:chatId', protectBotRoute, async (req, res) => {
             user.hemisToken = hemisToken;
             await user.save();
         }
-        
+
         const semesterCode = await scheduleService.getCurrentSemester(hemisToken, userLanguage);
         if (!semesterCode) {
             console.log("Could not get semester, trying to re-login to HEMIS...");
@@ -501,8 +495,8 @@ router.get('/schedule/:chatId', protectBotRoute, async (req, res) => {
             user.hemisToken = hemisToken;
             await user.save();
             const newSemesterCode = await scheduleService.getCurrentSemester(hemisToken, userLanguage);
-            if(!newSemesterCode) return res.status(400).json({ message: 'Could not determine semester even after re-login.' });
-            
+            if (!newSemesterCode) return res.status(400).json({ message: 'Could not determine semester even after re-login.' });
+
             const scheduleResult = await scheduleService.getScheduleFromHemis(hemisToken, user, newSemesterCode, userLanguage);
             return res.json({ schedule: scheduleResult, role: user.role });
         }
@@ -521,7 +515,7 @@ router.get('/schedule/:chatId', protectBotRoute, async (req, res) => {
         if (scheduleResult === null || scheduleResult?.error) {
             return res.status(500).json({ message: 'Failed to fetch schedule from HEMIS' });
         }
-        
+
         res.json({ schedule: scheduleResult, role: user.role });
 
     } catch (error) {
@@ -535,7 +529,7 @@ router.get('/attendance/:chatId', protectBotRoute, async (req, res) => {
     try {
         const { chatId } = req.params;
         const user = await User.findOne({ telegramChatId: chatId });
-        
+
         if (!user) return res.status(404).json({ message: 'User not found' });
         if (user.role !== 'student') return res.status(400).json({ message: 'Only students have attendance records' });
 
@@ -600,7 +594,7 @@ router.post('/logout', protectBotRoute, async (req, res) => {
 
         // Полностью удаляем пользователя из базы
         await User.findOneAndDelete({ telegramChatId: chatId });
-        
+
         res.json({ success: true, message: 'Logged out successfully' });
     } catch (error) {
         console.error('Logout error:', error);
@@ -704,7 +698,7 @@ router.post('/bind-by-user', protectBotRoute, async (req, res) => {
         if (!student) {
             return res.status(404).json({ message: 'user_not_found' });
         }
-        
+
         if (!student.group) {
             return res.status(400).json({ message: 'У вас не указана группа в профиле.' });
         }
@@ -723,9 +717,9 @@ router.post('/bind-by-user', protectBotRoute, async (req, res) => {
             }
             group = new Group({ groupName, telegramChatId: groupChatId });
         }
-        
+
         await group.save();
-        
+
         res.json({ success: true, groupName: groupName, studentName: student.fullName });
 
     } catch (error) {
