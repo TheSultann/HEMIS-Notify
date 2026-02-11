@@ -15,7 +15,7 @@ const UserSchema = new mongoose.Schema({
     hemisLogin: { type: String, required: true, unique: true },
     // Пароль от HEMIS теперь хранится напрямую
     hemisPassword: { type: String, required: true },
-    
+
     // Данные из профиля HEMIS
     fullName: { type: String },
     role: { type: String, enum: ['student', 'teacher'], default: 'student' },
@@ -25,12 +25,13 @@ const UserSchema = new mongoose.Schema({
     hemisToken: { type: String },
     telegramChatId: { type: String, unique: true, sparse: true },
     lastKnownAbsentHours: { type: Number, default: -1 },
+    lastSemesterCode: { type: String, default: null }, // Семестр, к которому относится lastKnownAbsentHours
     language: { type: String, enum: ['ru-RU', 'uz-UZ'], default: null },
 
-      // --- НОВЫЕ ПОЛЯ ДЛЯ СТАТИСТИКИ ---
-      isBlocked: { type: Boolean, default: false }, // Заблокировал ли юзер бота
-      lastActiveAt: { type: Date, default: Date.now }, // Дата последнего нажатия кнопок
-      // createdAt создается автоматически благодаря { timestamps: true }
+    // --- НОВЫЕ ПОЛЯ ДЛЯ СТАТИСТИКИ ---
+    isBlocked: { type: Boolean, default: false }, // Заблокировал ли юзер бота
+    lastActiveAt: { type: Date, default: Date.now }, // Дата последнего нажатия кнопок
+    // createdAt создается автоматически благодаря { timestamps: true }
 
 }, { timestamps: true });
 

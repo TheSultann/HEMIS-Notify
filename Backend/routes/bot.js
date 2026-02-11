@@ -39,9 +39,12 @@ router.post('/register', protectBotRoute, async (req, res) => {
         let user = await User.findOne({ telegramChatId: chatId });
         const userLanguage = user?.language || 'ru-RU'; // Используем сохраненный язык или по умолчанию русский
 
+        let initialSemesterCode = null;
+
         if (profileData.isStudent) {
             const semesterCode = await scheduleService.getCurrentSemester(hemisToken, userLanguage);
             if (semesterCode) {
+                initialSemesterCode = semesterCode;
                 const attData = await scheduleService.getAttendanceFromHemis(hemisToken, semesterCode, userLanguage);
                 if (attData) {
                     initialAbsentHours = attData.totalHours;
@@ -62,6 +65,7 @@ router.post('/register', protectBotRoute, async (req, res) => {
             user.role = profileData.isStudent ? 'student' : 'teacher';
             user.group = profileData.groupName;
             user.lastKnownAbsentHours = initialAbsentHours;
+            user.lastSemesterCode = initialSemesterCode;
 
             // Сохраняем язык, если он был установлен
             if (existingLanguage) {
@@ -77,7 +81,8 @@ router.post('/register', protectBotRoute, async (req, res) => {
                 fullName: profileData.fullName,
                 role: profileData.isStudent ? 'student' : 'teacher',
                 group: profileData.groupName,
-                lastKnownAbsentHours: initialAbsentHours
+                lastKnownAbsentHours: initialAbsentHours,
+                lastSemesterCode: initialSemesterCode
                 // Язык по умолчанию null - будет выбран при первом запуске
             });
         }
@@ -160,12 +165,31 @@ router.post('/unbind-group', protectBotRoute, async (req, res) => {
 // Эндпоинт для массовой проверки новых NB
 router.post('/check-new-absences', protectBotRoute, async (req, res) => {
     // Вспомогательная функция сравнения (вынести сюда, перед циклом)
-    async function processAttendanceDiff(user, currentData, notifications) {
-        const currentTotal = currentData.totalHours || 0; // Добавляем проверку на undefined
+    async function processAttendanceDiff(user, currentData, notifications, semesterCode) {
+        const currentTotal = currentData.totalHours || 0;
         const lastKnown = user.lastKnownAbsentHours;
+
+        // --- ЗАЩИТА ОТ СМЕНЫ СЕМЕСТРА ---
+        // Если семестр изменился (или это первый запуск), молча сбрасываем счётчик
+        if (user.lastSemesterCode && semesterCode && user.lastSemesterCode !== semesterCode) {
+            console.log(`Semester changed for ${user.hemisLogin}: ${user.lastSemesterCode} -> ${semesterCode}. Resetting counter silently.`);
+            user.lastKnownAbsentHours = currentTotal;
+            user.lastSemesterCode = semesterCode;
+            await user.save();
+            return; // НЕ отправляем уведомление
+        }
 
         // Если это первый запуск для юзера (значение -1 или undefined), просто сохраняем
         if (lastKnown === -1 || lastKnown === undefined || lastKnown === null) {
+            user.lastKnownAbsentHours = currentTotal;
+            user.lastSemesterCode = semesterCode;
+            await user.save();
+            return;
+        }
+
+        // Если семестр ещё не был сохранён, сохраняем без уведомления
+        if (!user.lastSemesterCode && semesterCode) {
+            user.lastSemesterCode = semesterCode;
             user.lastKnownAbsentHours = currentTotal;
             await user.save();
             return;
@@ -176,7 +200,6 @@ router.post('/check-new-absences', protectBotRoute, async (req, res) => {
             const diff = currentTotal - lastKnown;
 
             // Находим предмет, по которому прилетел NB (последний по дате)
-            // Сортируем все детали всех предметов по дате убывания
             let allDetails = [];
             if (currentData.subjects && currentData.subjects.length > 0) {
                 currentData.subjects.forEach(sub => {
@@ -187,9 +210,22 @@ router.post('/check-new-absences', protectBotRoute, async (req, res) => {
                     }
                 });
             }
-            allDetails.sort((a, b) => b.date - a.date); // Самые свежие сверху
+            allDetails.sort((a, b) => b.date - a.date);
 
-            const latestNB = allDetails[0]; // Самый последний NB
+            const latestNB = allDetails[0];
+
+            // --- ДОПОЛНИТЕЛЬНАЯ ЗАЩИТА: игнорируем NB старше 30 дней ---
+            if (latestNB && latestNB.date) {
+                const nbDateMs = latestNB.date * 1000;
+                const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
+                if (nbDateMs < thirtyDaysAgo) {
+                    console.log(`Skipping old NB for ${user.hemisLogin}: date ${new Date(nbDateMs).toISOString()} is older than 30 days.`);
+                    user.lastKnownAbsentHours = currentTotal;
+                    user.lastSemesterCode = semesterCode;
+                    await user.save();
+                    return; // НЕ отправляем уведомление за старый NB
+                }
+            }
 
             notifications.push({
                 chatId: user.telegramChatId,
@@ -199,20 +235,15 @@ router.post('/check-new-absences', protectBotRoute, async (req, res) => {
                 latestDate: latestNB ? latestNB.date : null
             });
 
-            // Обновляем базу
             user.lastKnownAbsentHours = currentTotal;
+            user.lastSemesterCode = semesterCode;
             await user.save();
         }
         // Если часов стало меньше (например, убрали NB), просто обновляем базу без уведомления
         else if (currentTotal < lastKnown) {
             user.lastKnownAbsentHours = currentTotal;
+            user.lastSemesterCode = semesterCode;
             await user.save();
-        }
-        // Если не изменилось, тоже обновляем базу (на случай если структура данных изменилась)
-        else if (currentTotal === lastKnown) {
-            // Можно обновить базу, но не обязательно
-            // user.lastKnownAbsentHours = currentTotal;
-            // await user.save();
         }
     }
 
@@ -258,13 +289,13 @@ router.post('/check-new-absences', protectBotRoute, async (req, res) => {
                         // Повторный запрос
                         const retryData = await scheduleService.getAttendanceFromHemis(hemisToken, semesterCode, userLanguage);
                         if (retryData && !retryData.error) {
-                            await processAttendanceDiff(user, retryData, notifications);
+                            await processAttendanceDiff(user, retryData, notifications, semesterCode);
                         } else if (retryData === null) {
                             console.log(`Failed to get attendance for user ${user.hemisLogin} after re-login`);
                         }
                     }
                 } else if (attData && !attData.error) {
-                    await processAttendanceDiff(user, attData, notifications);
+                    await processAttendanceDiff(user, attData, notifications, semesterCode);
                 } else if (attData === null) {
                     // Если данные не получены (не ошибка авторизации, но и не данные)
                     console.log(`Failed to get attendance for user ${user.hemisLogin}: API returned null`);
