@@ -9,14 +9,17 @@ const i18n = require('./i18n');
 
 function startBot() {
     const token = process.env.TELEGRAM_BOT_TOKEN;
-    const apiUrl = process.env.MINI_HEMIS_API_URL;
     const botApiSecret = process.env.BOT_API_SECRET;
+    const port = process.env.PORT || 5000;
 
-    if (!token || !apiUrl || !botApiSecret) {
-        console.error('Ошибка: одна или несколько переменных окружения не найдены!');
+    // Используем localhost вместо внешнего URL, чтобы обойти Cloudflare
+    // Бот и сервер работают в одном процессе — внешний запрос не нужен
+    const apiUrl = `http://localhost:${port}`;
+
+    if (!token || !botApiSecret) {
+        console.error('Ошибка: TELEGRAM_BOT_TOKEN или BOT_API_SECRET не найдены!');
         process.exit(1);
     }
-
     const bot = new TelegramBot(token, { polling: true });
     console.log('Телеграм-бот запущен...');
 

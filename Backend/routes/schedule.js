@@ -44,6 +44,11 @@ async function performHemisLogin(hemisLogin, hemisPassword) {
 }
 
 async function getCurrentSemester(hemisToken, language = 'ru-RU') {
+    // Приоритет: список семестров (надёжный, есть флаг current) → профиль (fallback)
+    const listResult = await getCurrentSemesterFromList(hemisToken, language);
+    if (listResult) return listResult;
+
+    // Fallback: профиль пользователя
     const endpoint = '/v1/account/me';
     const langParam = language ? `?l=${language}` : '';
     const url = `${process.env.HEMIS_API_BASE}${endpoint}${langParam}`;
@@ -53,19 +58,12 @@ async function getCurrentSemester(hemisToken, language = 'ru-RU') {
             method: 'GET',
             headers: { 'Authorization': `Bearer ${hemisToken}`, 'Accept': 'application/json', 'Origin': 'https://student.urdu.uz' }
         });
-        if (response.status !== 200) {
-            console.log('Profile unavailable, falling back to semesters list');
-            return await getCurrentSemesterFromList(hemisToken, language);
-        }
+        if (response.status !== 200) return null;
         const data = await response.json();
-        const semesterCode = data?.data?.semester?.code;
-        if (semesterCode) return semesterCode;
-
-        console.log('Profile returned no semester, falling back to semesters list');
-        return await getCurrentSemesterFromList(hemisToken, language);
+        return data?.data?.semester?.code || null;
     } catch (error) {
         console.error('Failed to fetch user profile data:', error);
-        return await getCurrentSemesterFromList(hemisToken, language);
+        return null;
     }
 }
 
