@@ -26,8 +26,16 @@ module.exports = {
             reply_markup: {
                 inline_keyboard: [
                     [
-                        { text: i18n.t(language, 'back'), callback_data: `sched_${formatDateStr(prevDate)}` },
-                        { text: i18n.t(language, 'forward'), callback_data: `sched_${formatDateStr(nextDate)}` }
+                        {
+                            text: i18n.t(language, 'back'),
+                            callback_data: `sched_${formatDateStr(prevDate)}`,
+                            style: 'primary'
+                        },
+                        {
+                            text: i18n.t(language, 'forward'),
+                            callback_data: `sched_${formatDateStr(nextDate)}`,
+                            style: 'primary'
+                        }
                     ]
                 ]
             }

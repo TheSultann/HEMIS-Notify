@@ -16,6 +16,7 @@ const translations = {
         // Расписание
         scheduleFor: 'Расписание на',
         group: 'Группа',
+        pair: 'пара',
         noLessons: 'Занятий нет. Можно отдыхать! 🎉',
         scheduleError: '❌ Ошибка получения данных. Попробуйте войти заново: /login',
 
@@ -63,6 +64,7 @@ const translations = {
         accountLinked: '✅ Аккаунт успешно привязан.',
         selectAction: 'Выберите нужный раздел в меню 👇',
         wrongCredentials: '❌ Неверный логин или пароль.',
+        hemisRateLimited: '⏳ HEMIS временно ограничил вход. Попробуйте позже.',
         serverError: '❌ Ошибка сервера.',
         tryAgain: 'Попробуйте снова.',
 
@@ -109,6 +111,7 @@ const translations = {
         // Расписание
         scheduleFor: 'Jadval',
         group: 'Guruh',
+        pair: 'juftlik',
         noLessons: 'Darslar yo\'q. Dam olish mumkin! 🎉',
         scheduleError: '❌ Ma\'lumotlarni olishda xatolik. Qayta kirishni urinib ko\'ring: /login',
 
@@ -155,6 +158,7 @@ const translations = {
         accountLinked: '✅ Hisob muvaffaqiyatli bog‘landi.',
         selectAction: 'Kerakli bo‘limni menyudan tanlang 👇',
         wrongCredentials: '❌ Noto\'g\'ri login yoki parol.',
+        hemisRateLimited: '⏳ HEMIS vaqtincha kirishni chekladi. Keyinroq urinib ko\'ring.',
         serverError: '❌ Server xatosi.',
         tryAgain: 'Qayta urinib ko\'ring.',
 
