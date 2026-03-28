@@ -6,6 +6,20 @@ const axios = require('axios');
 const cron = require('node-cron');
 const keyboards = require('./keyboards');
 const i18n = require('./i18n');
+const { filterScheduleByDate, formatSchedule } = require('./scheduleFormatter');
+const {
+    formatAttendanceMessage,
+    formatProfileMessage,
+    formatNbNotification,
+    getLogoutMessage
+} = require('./messageFormatter');
+const { resolveStartFlow } = require('./startFlow');
+const { createLoginStart, advanceLoginState, buildRegistrationPayload } = require('./loginFlow');
+const {
+    resolveBroadcastTarget,
+    buildBroadcastDraft,
+    buildBroadcastPreview
+} = require('./broadcastFlow');
 
 function startBot() {
     const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -161,6 +175,37 @@ function startBot() {
 
     const sleep = (ms) => new Promise(res => setTimeout(res, ms));
 
+    function getChatKind(chatId) {
+        return String(chatId).startsWith('-') ? 'group' : 'private';
+    }
+
+    function isUnavailableChatError(error) {
+        const message = String(error?.message || '').toLowerCase();
+        const description = String(error?.response?.body?.description || '').toLowerCase();
+        const haystack = `${message} ${description}`;
+
+        return haystack.includes('chat not found') ||
+            haystack.includes('bot was blocked by the user') ||
+            haystack.includes('bot was kicked from the supergroup chat') ||
+            haystack.includes('bot was kicked from the group chat') ||
+            haystack.includes('user is deactivated');
+    }
+
+    async function reportDeliveryFailure(chatId, chatType, error) {
+        if (!isUnavailableChatError(error)) {
+            return;
+        }
+
+        try {
+            await axios.post(`${apiUrl}/api/bot/delivery-failed`, {
+                chatId: String(chatId),
+                chatType
+            }, { headers: { 'x-bot-secret': botApiSecret } });
+        } catch (reportError) {
+            // Игнорируем ошибку отчета, чтобы не ломать основной поток
+        }
+    }
+
     async function waitForSlot(chatId) {
         const now = Date.now();
         const waitGlobal = Math.max(0, lastGlobalSend + GLOBAL_INTERVAL_MS - now);
@@ -188,6 +233,8 @@ function startBot() {
                     attempts++;
                     continue;
                 }
+
+                await reportDeliveryFailure(chatId, getChatKind(chatId), e);
                 throw e;
             }
         }
@@ -210,6 +257,8 @@ function startBot() {
                     attempts++;
                     continue;
                 }
+
+                await reportDeliveryFailure(chatId, getChatKind(chatId), e);
                 throw e;
             }
         }
@@ -217,41 +266,37 @@ function startBot() {
         throw lastError || new Error('pinSafe: retry limit reached');
     }
 
-    function formatSchedule(schedule, role, dateObject, groupName, language = 'ru-RU') {
-        // Современный компактный формат расписания
-        const locale = language === 'uz-UZ' ? 'uz-UZ' : 'ru-RU';
-        const dateStr = dateObject.toLocaleDateString(locale, { day: 'numeric', month: 'long' });
-        const weekday = dateObject.toLocaleDateString(locale, { weekday: 'long' });
+    async function deleteSafe(chatId, messageId) {
+        let attempts = 0;
+        let lastError = null;
+        while (attempts < 3) {
+            try {
+                await waitForSlot(chatId);
+                return await bot.deleteMessage(chatId, messageId);
+            } catch (e) {
+                lastError = e;
+                const retryAfter = e?.response?.body?.parameters?.retry_after;
+                if (e?.response?.statusCode === 429 && retryAfter) {
+                    await sleep(retryAfter * 1000 + 100);
+                    attempts++;
+                    continue;
+                }
 
-        let message = `🗓️ <b>${weekday}, ${dateStr}</b>\n`;
-        if (groupName) {
-            message += `👥 <b>${i18n.t(language, 'group')}:</b> ${groupName}\n`;
-        }
-        message += `\n`;
-
-        if (!schedule || schedule.length === 0) {
-            message += i18n.t(language, 'noLessons');
-            message += `\n👉 @HEMISnotify_bot`;
-            return message;
-        }
-
-        // Сортируем и рисуем карточки слотов
-        schedule.sort((a, b) => a.time.localeCompare(b.time));
-        schedule.forEach((item, idx) => {
-            message += `━ ${idx + 1} ━━━━━━━━━━━━━\n`;
-            message += `🕒 <b>${item.time}</b>\n`;
-            message += `📚 <b>${item.subjectId.name}</b>\n`;
-            if (item.subjectId.lessonType) message += `🏷️ ${item.subjectId.lessonType}\n`;
-            if (role === 'teacher') {
-                message += `👥 ${item.subjectId.groupName}\n`;
-            } else {
-                message += `👤 ${item.subjectId.teacherName}\n`;
+                throw e;
             }
-            message += `🚪 ${item.subjectId.auditoriumName}\n`;
-        });
+        }
+        console.error(`deleteSafe: exhausted retries for chat ${chatId}`, lastError?.message || lastError);
+        throw lastError || new Error('deleteSafe: retry limit reached');
+    }
 
-        message += `\n👉 @HEMISnotify_bot`;
-        return message;
+    function isIgnorableDeleteError(error) {
+        const message = String(error?.message || '').toLowerCase();
+        const description = String(error?.response?.body?.description || '').toLowerCase();
+        const haystack = `${message} ${description}`;
+
+        return haystack.includes('message to delete not found') ||
+            haystack.includes('message can\'t be deleted') ||
+            haystack.includes('message identifier is not specified');
     }
 
     async function handleScheduleRequest(chatId, dateObject, messageIdToEdit = null, isGroup = false) {
@@ -292,12 +337,7 @@ function startBot() {
                 }
             }
 
-            const daySchedule = scheduleData.schedule.filter(item => {
-                const lessonDate = new Date(item.lesson_date * 1000);
-                return lessonDate.getFullYear() === dateObject.getFullYear() &&
-                    lessonDate.getMonth() === dateObject.getMonth() &&
-                    lessonDate.getDate() === dateObject.getDate();
-            });
+            const daySchedule = filterScheduleByDate(scheduleData.schedule, dateObject);
 
             const formattedText = formatSchedule(
                 daySchedule,
@@ -361,37 +401,8 @@ function startBot() {
                 headers: { 'x-bot-secret': botApiSecret }
             });
 
-            const { totalHours, justifiedHours, unjustifiedHours, subjects } = response.data.data;
-
             await bot.deleteMessage(chatId, loading.message_id).catch(() => { });
-
-            const locale = language === 'uz-UZ' ? 'uz-UZ' : 'ru-RU';
-            let text = `📊 <b>${i18n.t(language, 'myAttendance')}</b>\n`;
-            text += `══════════════════\n`;
-            text += `🔴 <b>${i18n.t(language, 'totalAbsent')}:</b> ${totalHours} ${i18n.t(language, 'hours')}\n`;
-            text += `❌ ${i18n.t(language, 'withoutReason')}: <b>${unjustifiedHours} ${i18n.t(language, 'hours')}</b>\n`;
-            text += `🟢 ${i18n.t(language, 'withReason')}: <b>${justifiedHours} ${i18n.t(language, 'hours')}</b>\n\n`;
-
-            if (subjects.length > 0) {
-                subjects.forEach(sub => {
-                    text += `📚 <b>${sub.name}</b> (${sub.totalSubjectHours} ${i18n.t(language, 'hours')})\n`;
-
-                    sub.details.forEach(det => {
-                        const dateObj = new Date(det.date * 1000);
-                        const dateStr = dateObj.toLocaleDateString(locale, { day: '2-digit', month: '2-digit' });
-                        const statusIcon = det.isJustified ? "🟢" : "❌";
-                        const typeText = det.isJustified ? i18n.t(language, 'justified') : i18n.t(language, 'unjustified');
-
-                        text += `   ▪️ ${dateStr} ${det.time} — ${det.hours}${i18n.t(language, 'hours')} (${statusIcon})\n`;
-                    });
-                    text += `\n`;
-                });
-
-            } else {
-                text += `✅ <b>${i18n.t(language, 'congratulations')}</b> ${i18n.t(language, 'noAbsences')}`;
-            }
-
-            text += `\n👉 @HEMISnotify_bot`;
+            const text = formatAttendanceMessage(response.data.data, language);
             bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
 
         } catch (error) {
@@ -457,17 +468,19 @@ function startBot() {
         await bot.answerCallbackQuery(query.id);
 
         // 1. Выбрали аудиторию -> Просим текст
-        if (data === 'bc_target_students' || data === 'bc_target_groups') {
-            const target = data === 'bc_target_students' ? 'students' : 'groups';
+        const broadcastTarget = resolveBroadcastTarget(data);
+
+        if (broadcastTarget) {
+            const { target, label } = broadcastTarget;
 
             // Запоминаем состояние: ждем текст для конкретной цели
             userStates[chatId] = {
                 state: 'awaiting_broadcast_text',
-                target: target,
+                target,
                 ts: Date.now()
             };
 
-            await bot.editMessageText(`✍️ <b>Введите текст сообщения для рассылки (${target === 'students' ? 'Студентам' : 'Группам'}):</b>\n\n<i>Можно использовать HTML теги, ссылки и смайлики.</i>`, {
+            await bot.editMessageText(`✍️ <b>Введите текст сообщения для рассылки (${label}):</b>\n\n<i>Можно использовать HTML теги, ссылки и смайлики.</i>`, {
                 chat_id: chatId,
                 message_id: query.message.message_id,
                 parse_mode: 'HTML'
@@ -515,6 +528,11 @@ function startBot() {
                         successCount++;
                     } catch (e) {
                         failCount++;
+                        await reportDeliveryFailure(
+                            item.telegramChatId,
+                            draft.target === 'groups' ? 'group' : 'private',
+                            e
+                        );
                     }
                     // Пауза 30мс
                     await new Promise(resolve => setTimeout(resolve, 30));
@@ -537,13 +555,7 @@ function startBot() {
         const language = await getUserLanguage(msg.chat.id);
         try {
             const { data: { data: user } } = await axios.get(`${apiUrl}/api/bot/me/${msg.chat.id}`, { headers: { 'x-bot-secret': botApiSecret } });
-            let txt = `<b>👤 ${i18n.t(language, 'yourProfile')}:</b>\n\n` +
-                `📛 <b>${i18n.t(language, 'fullName')}:</b> ${user.fullName}\n` +
-                `🆔 <b>${i18n.t(language, 'login')}:</b> ${user.hemisLogin}\n` +
-                `🏫 <b>${i18n.t(language, 'groupLabel')}:</b> ${user.group || i18n.t(language, 'notSpecified')}\n` +
-                `🎓 <b>${i18n.t(language, 'role')}:</b> ${user.role === 'student' ? i18n.t(language, 'student') : i18n.t(language, 'teacher')}`;
-            txt += `\n\n👉 @HEMISnotify_bot`;
-            bot.sendMessage(msg.chat.id, txt, { parse_mode: 'HTML' });
+            bot.sendMessage(msg.chat.id, formatProfileMessage(user, language), { parse_mode: 'HTML' });
         } catch (e) {
             bot.sendMessage(msg.chat.id, i18n.t(language, 'profileNotFound'), keyboards.getGuestMenu(language));
         }
@@ -559,8 +571,13 @@ function startBot() {
 
     const loginHandler = async (msg) => {
         const language = await getUserLanguage(msg.chat.id);
-        if (msg.chat.type !== 'private') return bot.sendMessage(msg.chat.id, i18n.t(language, 'loginOnlyPrivate'));
-        userStates[msg.chat.id] = { state: 'awaiting_hemis_login', ts: Date.now() };
+        const loginStart = createLoginStart(msg.chat.type);
+
+        if (loginStart.type === 'private_only') {
+            return bot.sendMessage(msg.chat.id, i18n.t(language, 'loginOnlyPrivate'));
+        }
+
+        userStates[msg.chat.id] = { state: loginStart.nextState, ts: Date.now() };
         bot.sendMessage(msg.chat.id, i18n.t(language, 'enterHemisLogin'), { parse_mode: 'HTML', ...keyboards.removeKeyboard });
     };
 
@@ -652,10 +669,7 @@ function startBot() {
             delete userStates[chatId];
 
             // 3. Пишем сообщение и показываем кнопку входа
-            // (текст loggedOut нужно добавить в i18n.js, или напиши тут просто "Вы вышли.")
-            const text = language === 'uz-UZ' ? 'Tizimdan chiqdingiz.' : 'Вы вышли из системы.';
-
-            await bot.sendMessage(chatId, `✅ ${text}`, keyboards.getGuestMenu(language));
+            await bot.sendMessage(chatId, `✅ ${getLogoutMessage(language)}`, keyboards.getGuestMenu(language));
 
         } catch (error) {
             console.error('Logout error:', error.message);
@@ -673,7 +687,8 @@ function startBot() {
 
         if (msg.chat.type !== 'private') {
             const language = await getUserLanguage(chatId);
-            return bot.sendMessage(chatId, i18n.t(language, 'helloGroup'));
+            const flow = resolveStartFlow({ chatType: msg.chat.type, language });
+            return bot.sendMessage(chatId, i18n.t(flow.language, 'helloGroup'));
         }
 
         delete userStates[chatId];
@@ -683,31 +698,52 @@ function startBot() {
                 headers: { 'x-bot-secret': botApiSecret }
             });
 
-            if (!data.language) {
+            let flow = resolveStartFlow({
+                chatType: msg.chat.type,
+                language: data.language,
+                isAdmin: String(chatId) === String(ADMIN_ID),
+                hasSchedule: false
+            });
+
+            if (flow.type === 'select_language') {
                 return bot.sendMessage(chatId, i18n.t('ru-RU', 'selectLanguage'), keyboards.getLanguageSelectionKeyboard());
             }
 
-            const language = data.language;
-
-            // Выбираем клавиатуру: Админская или Обычная
-            const menuKeyboard = (String(chatId) === String(ADMIN_ID))
-                ? keyboards.getAdminMenu(language)
-                : keyboards.getMainMenu(language);
-
             try {
                 await axios.get(`${apiUrl}/api/bot/schedule/${chatId}`, { headers: { 'x-bot-secret': botApiSecret } });
-                bot.sendMessage(chatId, i18n.t(language, 'welcomeBack'), menuKeyboard);
+                flow = resolveStartFlow({
+                    chatType: msg.chat.type,
+                    language: data.language,
+                    isAdmin: String(chatId) === String(ADMIN_ID),
+                    hasSchedule: true
+                });
+
+                const menuKeyboard = flow.menuType === 'admin'
+                    ? keyboards.getAdminMenu(flow.language)
+                    : keyboards.getMainMenu(flow.language);
+
+                bot.sendMessage(chatId, i18n.t(flow.language, 'welcomeBack'), menuKeyboard);
             } catch (error) {
-                // Если не зарегистрирован
-                await bot.sendMessage(chatId, i18n.t(language, 'welcomeOnboarding'), { parse_mode: 'HTML' });
-                userStates[chatId] = { state: 'awaiting_hemis_login', ts: Date.now() };
-                await bot.sendMessage(chatId, i18n.t(language, 'enterHemisLogin'), {
+                flow = resolveStartFlow({
+                    chatType: msg.chat.type,
+                    language: data.language,
+                    isAdmin: String(chatId) === String(ADMIN_ID),
+                    hasSchedule: false
+                });
+
+                await bot.sendMessage(chatId, i18n.t(flow.language, 'welcomeOnboarding'), { parse_mode: 'HTML' });
+                userStates[chatId] = { state: flow.nextState, ts: Date.now() };
+                await bot.sendMessage(chatId, i18n.t(flow.language, 'enterHemisLogin'), {
                     parse_mode: 'HTML',
                     ...keyboards.removeKeyboard
                 });
             }
         } catch (error) {
-            bot.sendMessage(chatId, i18n.t('ru-RU', 'selectLanguage'), keyboards.getLanguageSelectionKeyboard());
+            const flow = resolveStartFlow({
+                chatType: msg.chat.type,
+                languageLookupFailed: true
+            });
+            bot.sendMessage(chatId, i18n.t(flow.language, 'selectLanguage'), keyboards.getLanguageSelectionKeyboard());
         }
     });
 
@@ -815,23 +851,18 @@ function startBot() {
 
         // 1. ЛОВИМ КОНТЕНТ ДЛЯ РАССЫЛКИ (Текст или Фото)
         if (state === 'awaiting_broadcast_text') {
-            const target = userStates[chatId].target;
+            const nextDraft = buildBroadcastDraft(userStates[chatId], msg);
 
-            // Сохраняем данные
-            userStates[chatId].text = text || ''; // Текст может быть пустым, если просто фото
-            userStates[chatId].photo = msg.photo ? msg.photo[msg.photo.length - 1].file_id : null; // ID самой большой фотки
-
-            // Если прислали ерунду (ни текста, ни фото)
-            if (!userStates[chatId].text && !userStates[chatId].photo) {
+            if (!nextDraft) {
                 return bot.sendMessage(chatId, '❌ Отправьте текст или фото.');
             }
 
-            userStates[chatId].state = 'awaiting_broadcast_confirm';
+            userStates[chatId] = nextDraft;
             userStates[chatId].ts = Date.now();
 
             // Показываем предпросмотр
             const confirmKb = keyboards.getBroadcastConfirmKeyboard();
-            const caption = `📢 <b>ПРЕДПРОСМОТР</b>\nTarget: ${target}\n➖➖➖\n${userStates[chatId].text}\n➖➖➖\n<i>Отправить?</i>`;
+            const caption = buildBroadcastPreview(userStates[chatId]);
 
             if (userStates[chatId].photo) {
                 return bot.sendPhoto(chatId, userStates[chatId].photo, { caption: caption, parse_mode: 'HTML', ...confirmKb });
@@ -863,8 +894,9 @@ function startBot() {
 
         // 2. Ловим логин HEMIS
         if (state === 'awaiting_hemis_login') {
-            userStates[chatId].hemisLogin = text;
-            userStates[chatId].state = 'awaiting_hemis_password';
+            const nextLoginState = advanceLoginState(state, text);
+            userStates[chatId].hemisLogin = nextLoginState.hemisLogin;
+            userStates[chatId].state = nextLoginState.nextState;
             userStates[chatId].ts = Date.now();
             bot.sendMessage(chatId, i18n.t(language, 'enterHemisPassword'), { parse_mode: 'HTML', ...keyboards.removeKeyboard });
         }
@@ -877,11 +909,11 @@ function startBot() {
             const loading = await bot.sendMessage(chatId, i18n.t(language, 'checkingData'));
 
             try {
-                const response = await axios.post(`${apiUrl}/api/bot/register`, {
-                    hemisLogin,
-                    hemisPassword: text,
-                    chatId: chatId.toString()
-                }, { headers: { 'x-bot-secret': botApiSecret } });
+                const response = await axios.post(
+                    `${apiUrl}/api/bot/register`,
+                    buildRegistrationPayload(chatId, hemisLogin, text),
+                    { headers: { 'x-bot-secret': botApiSecret } }
+                );
 
                 if (response.data.success) {
                     bot.deleteMessage(chatId, loading.message_id).catch(() => { });
@@ -889,7 +921,11 @@ function startBot() {
                 }
             } catch (error) {
                 bot.deleteMessage(chatId, loading.message_id).catch(() => { });
-                const msgErr = error.response?.status === 401 ? i18n.t(language, 'wrongCredentials') : i18n.t(language, 'serverError');
+                const msgErr = error.response?.status === 401
+                    ? i18n.t(language, 'wrongCredentials')
+                    : error.response?.status === 429
+                        ? i18n.t(language, 'hemisRateLimited')
+                        : i18n.t(language, 'serverError');
                 bot.sendMessage(chatId, `${msgErr} ${i18n.t(language, 'tryAgain')}.`, keyboards.getGuestMenu(language));
             }
         }
@@ -944,20 +980,7 @@ function startBot() {
                         // Используем язык по умолчанию
                     }
 
-                    const locale = userLanguage === 'uz-UZ' ? 'uz-UZ' : 'ru-RU';
-                    let msg = `⚠️ <b>${i18n.t(userLanguage, 'newAbsenceWarning')}</b>\n\n`;
-
-                    if (notify.latestSubject) {
-                        const dateObj = new Date(notify.latestDate * 1000);
-                        const dateStr = dateObj.toLocaleDateString(locale, { day: '2-digit', month: '2-digit' });
-                        msg += `📚 <b>${i18n.t(userLanguage, 'subject')}:</b> ${notify.latestSubject}\n`;
-                        msg += `📅 <b>${i18n.t(userLanguage, 'date')}:</b> ${dateStr}\n`;
-                    }
-
-                    msg += `📈 <b>${i18n.t(userLanguage, 'added')}:</b> +${notify.diff} ${i18n.t(userLanguage, 'hours')}\n`;
-                    msg += `🔴 <b>${i18n.t(userLanguage, 'totalAbsences')}:</b> ${notify.total} ${i18n.t(userLanguage, 'hours')}\n\n`;
-                    msg += `<i>${i18n.t(userLanguage, 'checkDetails')}</i>`;
-                    msg += `\n\n👉 @HEMISnotify_bot`;
+                    const msg = formatNbNotification(notify, userLanguage);
 
                     try {
                         await sendSafe(notify.chatId, msg, { parse_mode: 'HTML' });
@@ -979,14 +1002,30 @@ function startBot() {
             for (const group of groups) {
                 try {
                     const { data: scheduleData } = await axios.get(`${apiUrl}/api/bot/schedule/group/${encodeURIComponent(group.groupName)}`, { headers: { 'x-bot-secret': botApiSecret } });
-                    const daySchedule = scheduleData.schedule.filter(item => {
-                        const d = new Date(item.lesson_date * 1000);
-                        return d.getFullYear() === dateObject.getFullYear() && d.getMonth() === dateObject.getMonth() && d.getDate() === dateObject.getDate();
-                    });
+                    const daySchedule = filterScheduleByDate(scheduleData.schedule, dateObject);
                     // Для групповых рассылок используем русский язык по умолчанию
                     const msg = formatSchedule(daySchedule, 'student', dateObject, group.groupName, 'ru-RU');
-                    const sent = await sendSafe(group.telegramChatId, msg, { parse_mode: 'HTML' });
+                    const replyMarkup = keyboards.getSchedulePagination(dateObject, 'ru-RU');
+                    const sent = await sendSafe(group.telegramChatId, msg, {
+                        parse_mode: 'HTML',
+                        reply_markup: replyMarkup.reply_markup
+                    });
                     await pinSafe(sent.chat.id, sent.message_id, { disable_notification: false });
+
+                    if (group.lastScheduleMessageId && group.lastScheduleMessageId !== sent.message_id) {
+                        try {
+                            await deleteSafe(group.telegramChatId, group.lastScheduleMessageId);
+                        } catch (deleteError) {
+                            if (!isIgnorableDeleteError(deleteError)) {
+                                console.error(`Не удалось удалить прошлое сообщение группы ${group.groupName}:`, deleteError.message);
+                            }
+                        }
+                    }
+
+                    await axios.post(`${apiUrl}/api/bot/group-last-schedule-message`, {
+                        chatId: String(group.telegramChatId),
+                        messageId: sent.message_id
+                    }, { headers: { 'x-bot-secret': botApiSecret } });
                 } catch (e) { console.error(`Ошибка группы ${group.groupName}:`, e.message); }
             }
         } catch (e) { console.error("Ошибка массовой рассылки:", e.message); }
@@ -1015,13 +1054,14 @@ function startBot() {
 
                     // расписание
                     const { data: scheduleData } = await axios.get(`${apiUrl}/api/bot/schedule/${chatId}`, { headers: { 'x-bot-secret': botApiSecret } });
-                    const daySchedule = scheduleData.schedule.filter(item => {
-                        const d = new Date(item.lesson_date * 1000);
-                        return d.getFullYear() === dateObject.getFullYear() && d.getMonth() === dateObject.getMonth() && d.getDate() === dateObject.getDate();
-                    });
+                    const daySchedule = filterScheduleByDate(scheduleData.schedule, dateObject);
 
                     const msgText = formatSchedule(daySchedule, scheduleData.role || 'student', dateObject, groupName, language);
-                    await sendSafe(chatId, msgText, { parse_mode: 'HTML' });
+                    const replyMarkup = keyboards.getSchedulePagination(dateObject, language);
+                    await sendSafe(chatId, msgText, {
+                        parse_mode: 'HTML',
+                        reply_markup: replyMarkup.reply_markup
+                    });
                 } catch (e) {
                     // Если у пользователя нет доступа/бот заблокирован — пропускаем
                     if (!String(e.message).includes('Forbidden')) {

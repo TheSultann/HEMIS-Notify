@@ -23,6 +23,7 @@ const UserSchema = new mongoose.Schema({
 
     // Технические поля
     hemisToken: { type: String },
+    hemisRateLimitedUntil: { type: Date, default: null },
     telegramChatId: { type: String, unique: true, sparse: true },
     lastKnownAbsentHours: { type: Number, default: -1 },
     lastSemesterCode: { type: String, default: null }, // Семестр, к которому относится lastKnownAbsentHours

@@ -20,3 +20,4 @@ npm-debug.log*
 # Системные файлы macOS и Windows
 .DS_Store
 Thumbs.db
+coverage/
