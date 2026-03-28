@@ -26,18 +26,18 @@ async function applyLoginResult(user, authData, now = Date.now()) {
 }
 
 async function refreshTokenIfNeeded(user, plainPassword, scheduleService) {
-    let hemisToken = user.hemisToken;
+    const hemisToken = user.hemisToken;
+
+    if (hemisToken) {
+        return { token: hemisToken, rateLimited: false };
+    }
 
     if (isUserRateLimited(user)) {
         return { token: null, rateLimited: true };
     }
 
-    if (!hemisToken) {
-        const authData = await scheduleService.performHemisLogin(user.hemisLogin, plainPassword);
-        return applyLoginResult(user, authData);
-    }
-
-    return { token: hemisToken, rateLimited: false };
+    const authData = await scheduleService.performHemisLogin(user.hemisLogin, plainPassword);
+    return applyLoginResult(user, authData);
 }
 
 async function resolveUserSchedule(user, plainPassword, scheduleService) {

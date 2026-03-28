@@ -50,6 +50,19 @@ describe('bot access service', () => {
         expect(scheduleService.performHemisLogin).not.toHaveBeenCalled();
     });
 
+    test('refreshTokenIfNeeded reuses existing token during cooldown', async () => {
+        const user = createUser({
+            hemisToken: 'cached-token',
+            hemisRateLimitedUntil: new Date(Date.now() + 60_000)
+        });
+        const scheduleService = createScheduleService();
+
+        const result = await refreshTokenIfNeeded(user, 'secret', scheduleService);
+
+        expect(result).toEqual({ token: 'cached-token', rateLimited: false });
+        expect(scheduleService.performHemisLogin).not.toHaveBeenCalled();
+    });
+
     test('resolveUserSchedule returns auth failure when login fails', async () => {
         const user = createUser();
         const scheduleService = createScheduleService();
@@ -108,6 +121,26 @@ describe('bot access service', () => {
         });
     });
 
+    test('resolveUserSchedule keeps working with cached token during cooldown', async () => {
+        const user = createUser({
+            hemisToken: 'cached-token',
+            hemisRateLimitedUntil: new Date(Date.now() + 60_000)
+        });
+        const scheduleService = createScheduleService();
+        scheduleService.getCurrentSemester.mockResolvedValue('2026S');
+        scheduleService.getScheduleFromHemis.mockResolvedValue([{ lesson_date: 1710000000 }]);
+
+        await expect(resolveUserSchedule(user, 'secret', scheduleService)).resolves.toEqual({
+            status: 200,
+            body: {
+                schedule: [{ lesson_date: 1710000000 }],
+                role: 'student'
+            }
+        });
+
+        expect(scheduleService.performHemisLogin).not.toHaveBeenCalled();
+    });
+
     test('resolveUserAttendance retries after unauthorized attendance fetch', async () => {
         const user = createUser({ hemisToken: 'stale-token' });
         const scheduleService = createScheduleService();
@@ -136,6 +169,26 @@ describe('bot access service', () => {
             status: 400,
             body: { message: 'Semester not found' }
         });
+    });
+
+    test('resolveUserAttendance keeps working with cached token during cooldown', async () => {
+        const user = createUser({
+            hemisToken: 'cached-token',
+            hemisRateLimitedUntil: new Date(Date.now() + 60_000)
+        });
+        const scheduleService = createScheduleService();
+        scheduleService.getCurrentSemester.mockResolvedValue('2026S');
+        scheduleService.getAttendanceFromHemis.mockResolvedValue({ totalHours: 2, subjects: [] });
+
+        await expect(resolveUserAttendance(user, 'secret', scheduleService)).resolves.toEqual({
+            status: 200,
+            body: {
+                success: true,
+                data: { totalHours: 2, subjects: [] }
+            }
+        });
+
+        expect(scheduleService.performHemisLogin).not.toHaveBeenCalled();
     });
 
     test('resolveGroupSchedule returns student schedule for group sender', async () => {
