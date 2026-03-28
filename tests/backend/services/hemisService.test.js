@@ -3,6 +3,7 @@ const hemisService = require('../../../Backend/services/hemisService');
 describe('hemisService', () => {
     beforeEach(() => {
         global.fetch = jest.fn();
+        delete process.env.HEMIS_RATE_LIMIT_COOLDOWN_MS;
     });
 
     test('performHemisLogin returns token and profile data on success', async () => {
@@ -62,6 +63,29 @@ describe('hemisService', () => {
         });
     });
 
+    test('performHemisLogin uses configured cooldown and default captcha message for rate-limit responses', async () => {
+        process.env.HEMIS_RATE_LIMIT_COOLDOWN_MS = '90000';
+        global.fetch.mockResolvedValue({
+            json: async () => ({
+                success: false,
+                code: 429,
+                data: { error: 'CAPTCHA_REQUIRED' }
+            })
+        });
+
+        await expect(hemisService.performHemisLogin('login', 'password')).resolves.toEqual({
+            error: hemisService.HEMIS_RATE_LIMIT_ERROR,
+            retryAfterMs: 90000,
+            message: 'HEMIS temporarily requires captcha'
+        });
+    });
+
+    test('isRateLimitedAuthResult detects only hemis rate-limit markers', () => {
+        expect(hemisService.isRateLimitedAuthResult({ error: hemisService.HEMIS_RATE_LIMIT_ERROR })).toBe(true);
+        expect(hemisService.isRateLimitedAuthResult({ error: 'other_error' })).toBe(false);
+        expect(hemisService.isRateLimitedAuthResult(null)).toBe(false);
+    });
+
     test('performHemisLogin returns null when profile request is unsuccessful', async () => {
         global.fetch
             .mockResolvedValueOnce({
@@ -77,6 +101,20 @@ describe('hemisService', () => {
             });
 
         await expect(hemisService.performHemisLogin('login', 'password')).resolves.toBeNull();
+    });
+
+    test('performHemisLogin returns null and logs non-401 login failures', async () => {
+        const logSpy = jest.spyOn(console, 'log').mockImplementation(() => { });
+        global.fetch.mockResolvedValue({
+            json: async () => ({
+                success: false,
+                code: 500,
+                error: 'server down'
+            })
+        });
+
+        await expect(hemisService.performHemisLogin('login', 'password')).resolves.toBeNull();
+        expect(logSpy).toHaveBeenCalledWith('HEMIS Login failed:', expect.objectContaining({ code: 500 }));
     });
 
     test('performHemisLogin returns null when fetch throws', async () => {
@@ -176,6 +214,31 @@ describe('hemisService', () => {
             .mockResolvedValueOnce({ status: 403, json: async () => ({}) });
 
         await expect(hemisService.getCurrentSemester('token', '')).resolves.toBeNull();
+    });
+
+    test('getCurrentSemester returns list result immediately without profile fallback fetch', async () => {
+        global.fetch.mockResolvedValue({
+            status: 200,
+            json: async () => ({
+                success: true,
+                data: [{ code: 'SPRING-2026', current: true }]
+            })
+        });
+
+        await expect(hemisService.getCurrentSemester('token')).resolves.toBe('SPRING-2026');
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    test('getCurrentSemesterFromList returns null when semesters payload is an empty array', async () => {
+        global.fetch.mockResolvedValue({
+            status: 200,
+            json: async () => ({
+                success: true,
+                data: []
+            })
+        });
+
+        await expect(hemisService.getCurrentSemesterFromList('token')).resolves.toBeNull();
     });
 
     test('getScheduleFromHemis returns unauthorized marker on 401', async () => {

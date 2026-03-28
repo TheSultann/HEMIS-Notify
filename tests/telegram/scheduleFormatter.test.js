@@ -86,4 +86,40 @@ describe('scheduleFormatter', () => {
         expect(message).toContain('3-пара · 15:30');
         expect(message).toContain('🚪 206\n\n━ 3-пара');
     });
+
+    test('formatSchedule falls back to index-based pair number for invalid time strings', () => {
+        const message = formatSchedule([
+            {
+                time: 'soon',
+                subjectId: {
+                    name: 'Algorithms',
+                    teacherName: 'Teacher',
+                    groupName: 'SE-101',
+                    auditoriumName: '404',
+                    lessonType: ''
+                }
+            }
+        ], 'student', new Date('2026-03-19T10:00:00+05:00'), 'SE-101', 'ru-RU');
+
+        expect(message).toContain('1-пара · soon');
+        expect(message).not.toContain('🏷️');
+    });
+
+    test('formatSchedule falls back to index-based pair number when time is not a string', () => {
+        const message = formatSchedule([
+            {
+                time: null,
+                subjectId: {
+                    name: 'Networks',
+                    teacherName: 'Teacher',
+                    groupName: 'SE-101',
+                    auditoriumName: 'Lab-1',
+                    lessonType: 'Practice'
+                }
+            }
+        ], 'student', new Date('2026-03-19T10:00:00+05:00'), 'SE-101', 'ru-RU');
+
+        expect(message).toContain('1-пара · null');
+        expect(message).toContain('Practice');
+    });
 });
