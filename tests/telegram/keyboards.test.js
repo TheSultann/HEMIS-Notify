@@ -17,4 +17,15 @@ describe('Telegram keyboards', () => {
             style: 'primary'
         });
     });
+
+    test('onboarding keyboard renders a single primary start button', () => {
+        const keyboard = keyboards.getOnboardingStartKeyboard('uz-UZ');
+        const [startButton] = keyboard.reply_markup.inline_keyboard[0];
+
+        expect(startButton).toMatchObject({
+            text: "Tushunarli, boshlash",
+            callback_data: 'onboarding_start',
+            style: 'primary'
+        });
+    });
 });

@@ -7,7 +7,7 @@ const Group = require('../models/Group');
 const scheduleService = require('../services/hemisService');
 const { processAttendanceDiff } = require('../services/attendanceNotificationService');
 const { sleep } = require('../services/timeService');
-const { resolveUserSchedule, resolveUserAttendance, resolveGroupSchedule } = require('../services/botAccessService');
+const { resolveUserSchedule, resolveUserAttendance } = require('../services/botAccessService');
 const { encrypt, decrypt } = require('../utils/crypto');
 
 const activeUserFilter = {
@@ -44,6 +44,58 @@ async function applyLoginResult(user, authData, now = Date.now()) {
     }
 
     return { token: authData.token, rateLimited: false };
+}
+
+function getNbAttendanceBatchSize() {
+    const configuredValue = Number(process.env.NB_ATTENDANCE_BATCH_SIZE);
+    return Number.isInteger(configuredValue) && configuredValue > 0
+        ? configuredValue
+        : 2;
+}
+
+function getNbAttendanceBatchPauseMs() {
+    const configuredValue = Number(process.env.NB_ATTENDANCE_BATCH_PAUSE_MS);
+    return Number.isFinite(configuredValue) && configuredValue >= 0
+        ? configuredValue
+        : 1500;
+}
+
+async function processInBatches(items, worker, { batchSize, pauseMs }) {
+    if (!Array.isArray(items) || items.length === 0) {
+        return;
+    }
+
+    const normalizedBatchSize = Math.max(1, batchSize);
+    const normalizedPauseMs = Math.max(0, pauseMs);
+
+    for (let index = 0; index < items.length; index += normalizedBatchSize) {
+        const batch = items.slice(index, index + normalizedBatchSize);
+        await Promise.all(batch.map(worker));
+
+        if (normalizedPauseMs > 0 && index + normalizedBatchSize < items.length) {
+            await sleep(normalizedPauseMs);
+        }
+    }
+}
+
+async function getSemesterCodeForLanguage({
+    hemisToken,
+    userLanguage,
+    semesterCodesByLanguage,
+    forceRefresh = false
+}) {
+    if (!forceRefresh && semesterCodesByLanguage.has(userLanguage)) {
+        return semesterCodesByLanguage.get(userLanguage);
+    }
+
+    const semesterCode = await scheduleService.getCurrentSemester(hemisToken, userLanguage);
+    if (semesterCode) {
+        semesterCodesByLanguage.set(userLanguage, semesterCode);
+    } else {
+        semesterCodesByLanguage.delete(userLanguage);
+    }
+
+    return semesterCode;
 }
 
 const protectBotRoute = (req, res, next) => {
@@ -207,85 +259,109 @@ router.post('/unbind-group', protectBotRoute, async (req, res) => {
 
 // Эндпоинт для массовой проверки новых NB
 router.post('/check-new-absences', protectBotRoute, async (req, res) => {
-    // Вспомогательная функция сравнения (вынести сюда, перед циклом)
-    async function syncAttendanceDiff(user, currentData, notifications, semesterCode) {
-        await processAttendanceDiff({
-            user,
-            currentData,
-            notifications,
-            semesterCode
-        });
-    }
-
     try {
         // Ищем всех студентов, у которых есть chatID
         const students = await User.find({
             ...activeUserFilter,
             role: 'student',
-            telegramChatId: { $ne: null }
+            telegramChatId: { $ne: null },
+            isBlocked: { $ne: true }
         });
 
         const notifications = [];
+        const semesterCodesByLanguage = new Map();
 
-        for (const user of students) {
-            try {
-                // Расшифровка пароля
-                const plainPassword = decrypt(user.hemisPassword);
-                let hemisToken = user.hemisToken;
-                const userLanguage = user.language || 'ru-RU'; // Используем язык пользователя или по умолчанию русский
+        await processInBatches(
+            students,
+            async (user) => {
+                try {
+                    const plainPassword = decrypt(user.hemisPassword);
+                    let hemisToken = user.hemisToken;
+                    const userLanguage = user.language || 'ru-RU';
 
-                if (isUserRateLimited(user)) {
-                    continue;
-                }
-
-                // 1. Получаем семестр (с авто-обновлением токена)
-                let semesterCode = await scheduleService.getCurrentSemester(hemisToken, userLanguage);
-
-                if (!semesterCode) {
-                    // Ре-логин
-                    const authData = await scheduleService.performHemisLogin(user.hemisLogin, plainPassword);
-                    const loginResult = await applyLoginResult(user, authData);
-                    if (loginResult.token) {
-                        hemisToken = loginResult.token;
-                        semesterCode = await scheduleService.getCurrentSemester(hemisToken, userLanguage);
+                    if (isUserRateLimited(user)) {
+                        return;
                     }
-                }
 
-                if (!semesterCode) continue; // Пропускаем, если не удалось войти
+                    let semesterCode = await getSemesterCodeForLanguage({
+                        hemisToken,
+                        userLanguage,
+                        semesterCodesByLanguage
+                    });
 
-                // 2. Получаем посещаемость
-                const attData = await scheduleService.getAttendanceFromHemis(hemisToken, semesterCode, userLanguage);
+                    if (!semesterCode) {
+                        const authData = await scheduleService.performHemisLogin(user.hemisLogin, plainPassword);
+                        const loginResult = await applyLoginResult(user, authData);
+                        if (!loginResult.token) {
+                            return;
+                        }
 
-                // Если ошибка авторизации при получении данных
-                if (attData?.error === 'unauthorized') {
-                    const authData = await scheduleService.performHemisLogin(user.hemisLogin, plainPassword);
-                    const loginResult = await applyLoginResult(user, authData);
-                    if (loginResult.token) {
                         hemisToken = loginResult.token;
-                        // Повторный запрос
-                        const retryData = await scheduleService.getAttendanceFromHemis(hemisToken, semesterCode, userLanguage);
-                        if (retryData && !retryData.error) {
-                            await syncAttendanceDiff(user, retryData, notifications, semesterCode);
-                        } else if (retryData === null) {
-                            console.log(`Failed to get attendance for user ${user.hemisLogin} after re-login`);
+                        semesterCode = await getSemesterCodeForLanguage({
+                            hemisToken,
+                            userLanguage,
+                            semesterCodesByLanguage,
+                            forceRefresh: true
+                        });
+                    }
+
+                    if (!semesterCode) {
+                        return;
+                    }
+
+                    let attData = await scheduleService.getAttendanceFromHemis(hemisToken, semesterCode, userLanguage);
+
+                    if (attData?.error === 'unauthorized') {
+                        const authData = await scheduleService.performHemisLogin(user.hemisLogin, plainPassword);
+                        const loginResult = await applyLoginResult(user, authData);
+                        if (!loginResult.token) {
+                            return;
+                        }
+
+                        hemisToken = loginResult.token;
+                        semesterCode = (await getSemesterCodeForLanguage({
+                            hemisToken,
+                            userLanguage,
+                            semesterCodesByLanguage,
+                            forceRefresh: true
+                        })) || semesterCode;
+
+                        attData = await scheduleService.getAttendanceFromHemis(hemisToken, semesterCode, userLanguage);
+                    } else if (attData === null) {
+                        const refreshedSemesterCode = await getSemesterCodeForLanguage({
+                            hemisToken,
+                            userLanguage,
+                            semesterCodesByLanguage,
+                            forceRefresh: true
+                        });
+
+                        if (refreshedSemesterCode && refreshedSemesterCode !== semesterCode) {
+                            semesterCode = refreshedSemesterCode;
+                            attData = await scheduleService.getAttendanceFromHemis(hemisToken, semesterCode, userLanguage);
                         }
                     }
-                } else if (attData && !attData.error) {
-                    await syncAttendanceDiff(user, attData, notifications, semesterCode);
-                } else if (attData === null) {
-                    // Если данные не получены (не ошибка авторизации, но и не данные)
-                    console.log(`Failed to get attendance for user ${user.hemisLogin}: API returned null`);
-                    // НЕ обновляем lastKnownAbsentHours, чтобы не потерять текущее состояние
+
+                    if (attData && !attData.error) {
+                        await processAttendanceDiff({
+                            user,
+                            currentData: attData,
+                            notifications,
+                            semesterCode,
+                            language: userLanguage
+                        });
+                    } else if (attData === null) {
+                        console.log(`Failed to get attendance for user ${user.hemisLogin}: API returned null`);
+                    }
+                } catch (err) {
+                    console.error(`Error checking user ${user.hemisLogin}:`, err.message);
+                    await sleep(2000);
                 }
-
-            } catch (err) {
-                console.error(`Error checking user ${user.hemisLogin}:`, err.message);
-                // бэкофф, чтобы не долбить HEMIS при ошибках/лимитах
-                await sleep(2000);
+            },
+            {
+                batchSize: getNbAttendanceBatchSize(),
+                pauseMs: getNbAttendanceBatchPauseMs()
             }
-
-            await sleep(1500); // Пауза 1.5 сек после каждого студента для равномерной нагрузки
-        }
+        );
 
         res.json({ success: true, notifications });
 
@@ -425,19 +501,34 @@ router.post('/set-language', protectBotRoute, async (req, res) => {
     }
 });
 
-async function getGroupSchedule(groupName) {
-    const user = await User.findOne({
-        ...activeUserFilter,
-        group: { $regex: groupName, $options: 'i' }
-    });
+function escapeRegExp(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
-    if (!user) {
-        throw { status: 404, message: `Не найден зарегистрированный студент для группы ${groupName}.` };
+function getExactGroupMatcher(groupName) {
+    return new RegExp(`^${escapeRegExp(String(groupName).trim())}$`, 'i');
+}
+
+function sortGroupCandidates(left, right) {
+    const leftRateLimited = isUserRateLimited(left);
+    const rightRateLimited = isUserRateLimited(right);
+    if (leftRateLimited !== rightRateLimited) {
+        return leftRateLimited ? 1 : -1;
     }
 
+    const leftHasToken = Boolean(left.hemisToken);
+    const rightHasToken = Boolean(right.hemisToken);
+    if (leftHasToken !== rightHasToken) {
+        return leftHasToken ? -1 : 1;
+    }
+
+    return new Date(right.updatedAt || 0).getTime() - new Date(left.updatedAt || 0).getTime();
+}
+
+async function getGroupScheduleForUser(user) {
     const plainPassword = decrypt(user.hemisPassword);
     let hemisToken = user.hemisToken;
-    const userLanguage = user.language || 'ru-RU'; // Используем язык пользователя или по умолчанию русский
+    const userLanguage = user.language || 'ru-RU';
 
     if (isUserRateLimited(user)) {
         throw { status: 429, message: DEFAULT_RATE_LIMIT_MESSAGE };
@@ -449,7 +540,7 @@ async function getGroupSchedule(groupName) {
         if (!loginResult.token) {
             throw loginResult.rateLimited
                 ? { status: 429, message: DEFAULT_RATE_LIMIT_MESSAGE }
-                : { status: 401, message: 'Ошибка аутентификации HEMIS от имени участника группы' };
+                : { status: 401, message: 'Failed to authenticate with HEMIS for this group member' };
         }
 
         hemisToken = loginResult.token;
@@ -462,12 +553,14 @@ async function getGroupSchedule(groupName) {
         if (!loginResult.token) {
             throw loginResult.rateLimited
                 ? { status: 429, message: DEFAULT_RATE_LIMIT_MESSAGE }
-                : { status: 401, message: 'Ошибка повторной аутентификации в HEMIS' };
+                : { status: 401, message: 'Failed to re-authenticate with HEMIS' };
         }
 
         hemisToken = loginResult.token;
         const newSemesterCode = await scheduleService.getCurrentSemester(hemisToken, userLanguage);
-        if (!newSemesterCode) throw { status: 400, message: 'Не удалось определить семестр.' };
+        if (!newSemesterCode) {
+            throw { status: 400, message: 'Could not determine semester.' };
+        }
 
         const scheduleResult = await scheduleService.getScheduleFromHemis(hemisToken, user, newSemesterCode, userLanguage);
         return { schedule: scheduleResult, role: 'student' };
@@ -481,7 +574,7 @@ async function getGroupSchedule(groupName) {
         if (!loginResult.token) {
             throw loginResult.rateLimited
                 ? { status: 429, message: DEFAULT_RATE_LIMIT_MESSAGE }
-                : { status: 401, message: 'Ошибка повторной аутентификации в HEMIS' };
+                : { status: 401, message: 'Failed to re-authenticate with HEMIS' };
         }
 
         hemisToken = loginResult.token;
@@ -489,10 +582,45 @@ async function getGroupSchedule(groupName) {
     }
 
     if (scheduleResult === null || scheduleResult?.error) {
-        throw { status: 500, message: 'Не удалось получить расписание из HEMIS' };
+        throw { status: 500, message: 'Failed to fetch schedule from HEMIS' };
     }
 
     return { schedule: scheduleResult, role: 'student' };
+}
+
+async function getGroupSchedule(groupName) {
+    const candidates = await User.find({
+        ...activeUserFilter,
+        group: getExactGroupMatcher(groupName)
+    });
+
+    if (!candidates.length) {
+        throw { status: 404, message: `No registered student found for group ${groupName}.` };
+    }
+
+    let lastError = null;
+    let sawRateLimitedCandidate = false;
+
+    for (const candidate of candidates.sort(sortGroupCandidates)) {
+        try {
+            return await getGroupScheduleForUser(candidate);
+        } catch (error) {
+            if (error?.status === 429) {
+                sawRateLimitedCandidate = true;
+            }
+            lastError = error;
+        }
+    }
+
+    if (lastError && lastError.status !== 429) {
+        throw lastError;
+    }
+
+    if (sawRateLimitedCandidate) {
+        throw { status: 429, message: DEFAULT_RATE_LIMIT_MESSAGE };
+    }
+
+    throw lastError || { status: 500, message: 'Failed to fetch group schedule from HEMIS' };
 }
 
 router.get('/schedule/group/:groupName', protectBotRoute, async (req, res) => {

@@ -192,6 +192,9 @@ const translations = {
     }
 };
 
+translations['ru-RU'].startOnboarding = 'Понятно, начать';
+translations['uz-UZ'].startOnboarding = 'Tushunarli, boshlash';
+
 function t(lang, key) {
     if (!lang || !translations[lang]) {
         lang = 'ru-RU'; // Fallback to Russian

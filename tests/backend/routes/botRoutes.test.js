@@ -362,6 +362,67 @@ describe('/api/bot routes', () => {
         expect(user.hemisToken).toBe('group-token');
     });
 
+    test('group schedule uses exact group name and does not match similar groups', async () => {
+        await User.create({
+            hemisLogin: 'student-1',
+            hemisPassword: encrypt('secret'),
+            telegramChatId: '1001',
+            role: 'student',
+            group: 'SE-101'
+        });
+
+        await request(app)
+            .get('/api/bot/schedule/group/SE-10')
+            .set(authHeaders)
+            .expect(404);
+
+        expect(hemisService.performHemisLogin).not.toHaveBeenCalled();
+        expect(hemisService.getScheduleFromHemis).not.toHaveBeenCalled();
+    });
+
+    test('group schedule falls back to another exact group member when the first candidate fails', async () => {
+        await Group.create({ groupName: 'SE-101', telegramChatId: 'group-chat-1' });
+        await User.create([
+            {
+                hemisLogin: 'student-1',
+                hemisPassword: encrypt('secret-1'),
+                telegramChatId: '1001',
+                role: 'student',
+                group: 'SE-101',
+                hemisToken: 'stale-token'
+            },
+            {
+                hemisLogin: 'student-2',
+                hemisPassword: encrypt('secret-2'),
+                telegramChatId: '1002',
+                role: 'student',
+                group: 'SE-101'
+            }
+        ]);
+
+        hemisService.getCurrentSemester.mockResolvedValue('2026S');
+        hemisService.getScheduleFromHemis
+            .mockResolvedValueOnce({ error: 'unauthorized' })
+            .mockResolvedValueOnce([{ lesson_date: 1710000000 }]);
+        hemisService.performHemisLogin
+            .mockResolvedValueOnce(null)
+            .mockResolvedValueOnce({ token: 'group-token' });
+
+        const response = await request(app)
+            .get('/api/bot/schedule/group-by-chat-id/group-chat-1')
+            .set(authHeaders)
+            .expect(200);
+
+        expect(response.body).toEqual({
+            schedule: [{ lesson_date: 1710000000 }],
+            role: 'student',
+            groupName: 'SE-101'
+        });
+
+        const secondUser = await User.findOne({ telegramChatId: '1002' }).lean();
+        expect(secondUser.hemisToken).toBe('group-token');
+    });
+
     test('attendance route is available only for students', async () => {
         await User.create({
             hemisLogin: 'teacher-1',
@@ -482,6 +543,62 @@ describe('/api/bot routes', () => {
         expect(activeUser.lastKnownAbsentHours).toBe(2);
     });
 
+    test('check-new-absences skips blocked users and reuses semester lookup across batches for same language', async () => {
+        await User.create([
+            {
+                hemisLogin: 's1001',
+                hemisPassword: encrypt('secret-1'),
+                telegramChatId: '1001',
+                role: 'student',
+                language: 'ru-RU',
+                lastKnownAbsentHours: -1
+            },
+            {
+                hemisLogin: 's1002',
+                hemisPassword: encrypt('secret-2'),
+                telegramChatId: '1002',
+                role: 'student',
+                language: 'ru-RU',
+                lastKnownAbsentHours: -1
+            },
+            {
+                hemisLogin: 's1004',
+                hemisPassword: encrypt('secret-4'),
+                telegramChatId: '1004',
+                role: 'student',
+                language: 'ru-RU',
+                lastKnownAbsentHours: -1
+            },
+            {
+                hemisLogin: 's1003',
+                hemisPassword: encrypt('secret-3'),
+                telegramChatId: '1003',
+                role: 'student',
+                language: 'ru-RU',
+                isBlocked: true,
+                lastKnownAbsentHours: -1
+            }
+        ]);
+
+        hemisService.getCurrentSemester.mockResolvedValue('2026S');
+        hemisService.getAttendanceFromHemis.mockResolvedValue({
+            totalHours: 2,
+            subjects: []
+        });
+
+        await request(app)
+            .post('/api/bot/check-new-absences')
+            .set(authHeaders)
+            .send({})
+            .expect(200, {
+                success: true,
+                notifications: []
+            });
+
+        expect(hemisService.getCurrentSemester).toHaveBeenCalledTimes(2);
+        expect(hemisService.getAttendanceFromHemis).toHaveBeenCalledTimes(3);
+    });
+
     test('check-new-absences skips users with active HEMIS rate-limit cooldown', async () => {
         await User.create({
             hemisLogin: 's1001',
@@ -505,8 +622,50 @@ describe('/api/bot routes', () => {
         expect(hemisService.performHemisLogin).not.toHaveBeenCalled();
     });
 
+    test('check-new-absences includes user language in notification payload', async () => {
+        const latestDate = Math.floor((Date.now() - 5 * 24 * 60 * 60 * 1000) / 1000);
+
+        await User.create({
+            hemisLogin: 's1001',
+            hemisPassword: encrypt('secret'),
+            telegramChatId: '1001',
+            role: 'student',
+            language: 'uz-UZ',
+            lastKnownAbsentHours: 1,
+            lastSemesterCode: '2026S'
+        });
+
+        hemisService.getCurrentSemester.mockResolvedValue('2026S');
+        hemisService.getAttendanceFromHemis.mockResolvedValue({
+            totalHours: 3,
+            subjects: [
+                {
+                    name: 'Physics',
+                    details: [{ date: latestDate, hours: 2 }]
+                }
+            ]
+        });
+
+        const response = await request(app)
+            .post('/api/bot/check-new-absences')
+            .set(authHeaders)
+            .send({})
+            .expect(200);
+
+        expect(response.body.notifications).toEqual([
+            {
+                chatId: '1001',
+                diff: 2,
+                total: 3,
+                latestSubject: 'Physics',
+                latestDate,
+                language: 'uz-UZ'
+            }
+        ]);
+    });
+
     test('check-new-absences continues processing after per-user failure', async () => {
-        const latestDate = Math.floor(Date.parse('2026-03-10T00:00:00.000Z') / 1000);
+        const latestDate = Math.floor((Date.now() - 5 * 24 * 60 * 60 * 1000) / 1000);
 
         await User.create([
             {
@@ -555,7 +714,8 @@ describe('/api/bot routes', () => {
                 diff: 3,
                 total: 4,
                 latestSubject: 'Physics',
-                latestDate
+                latestDate,
+                language: 'ru-RU'
             }
         ]);
     });

@@ -3,7 +3,8 @@ async function processAttendanceDiff({
     currentData,
     notifications,
     semesterCode,
-    now = Date.now()
+    now = Date.now(),
+    language = 'ru-RU'
 }) {
     const currentTotal = currentData.totalHours || 0;
     const lastKnown = user.lastKnownAbsentHours;
@@ -67,7 +68,8 @@ async function processAttendanceDiff({
             diff,
             total: currentTotal,
             latestSubject: latestNB ? latestNB.subjectName : null,
-            latestDate: latestNB ? latestNB.date : null
+            latestDate: latestNB ? latestNB.date : null,
+            language
         });
 
         user.lastKnownAbsentHours = currentTotal;

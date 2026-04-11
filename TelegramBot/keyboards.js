@@ -55,6 +55,22 @@ module.exports = {
         };
     },
 
+    getOnboardingStartKeyboard: (language = 'ru-RU') => {
+        return {
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        {
+                            text: i18n.t(language, 'startOnboarding'),
+                            callback_data: 'onboarding_start',
+                            style: 'primary'
+                        }
+                    ]
+                ]
+            }
+        };
+    },
+
     getMainMenu: (language = 'ru-RU') => {
         return {
             reply_markup: {

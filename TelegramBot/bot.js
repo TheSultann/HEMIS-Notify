@@ -82,6 +82,9 @@ function startBot() {
 
     const userStates = {};
     const USER_STATE_TTL_MS = 60 * 60 * 1000; // 1 час
+    const nbCheckCronExpression = process.env.NB_CHECK_CRON || '*/10 8-22 * * *';
+    let isNbCheckInProgress = false;
+
     setInterval(() => {
         const now = Date.now();
         Object.keys(userStates).forEach((id) => {
@@ -141,6 +144,33 @@ function startBot() {
         } catch (error) {
             return 'ru-RU'; // Fallback to Russian
         }
+    }
+
+    async function getLocalProfile(chatId) {
+        try {
+            const { data } = await axios.get(`${apiUrl}/api/bot/me/${chatId}`, {
+                headers: { 'x-bot-secret': botApiSecret }
+            });
+            return data?.data || null;
+        } catch (error) {
+            if (error.response?.status === 404) {
+                return null;
+            }
+
+            throw error;
+        }
+    }
+
+    async function hasRegisteredAccount(chatId) {
+        const profile = await getLocalProfile(chatId);
+        return Boolean(profile?.hemisLogin && !String(profile.hemisLogin).startsWith('temp_'));
+    }
+
+    async function sendOnboardingIntro(chatId, language) {
+        await bot.sendMessage(chatId, i18n.t(language, 'welcomeOnboarding'), {
+            parse_mode: 'HTML',
+            ...keyboards.getOnboardingStartKeyboard(language)
+        });
     }
 
     // Установка языка пользователя
@@ -240,6 +270,30 @@ function startBot() {
         }
         console.error(`sendSafe: exhausted retries for chat ${chatId}`, lastError?.message || lastError);
         throw lastError || new Error('sendSafe: retry limit reached');
+    }
+
+    async function sendPhotoSafe(chatId, photo, options) {
+        let attempts = 0;
+        let lastError = null;
+        while (attempts < 3) {
+            try {
+                await waitForSlot(chatId);
+                return await bot.sendPhoto(chatId, photo, options);
+            } catch (e) {
+                lastError = e;
+                const retryAfter = e?.response?.body?.parameters?.retry_after;
+                if (e?.response?.statusCode === 429 && retryAfter) {
+                    await sleep(retryAfter * 1000 + 100);
+                    attempts++;
+                    continue;
+                }
+
+                await reportDeliveryFailure(chatId, getChatKind(chatId), e);
+                throw e;
+            }
+        }
+        console.error(`sendPhotoSafe: exhausted retries for chat ${chatId}`, lastError?.message || lastError);
+        throw lastError || new Error('sendPhotoSafe: retry limit reached');
     }
 
     async function pinSafe(chatId, messageId, options) {
@@ -434,25 +488,27 @@ function startBot() {
 
             const success = await setUserLanguage(chatId, language);
             if (success) {
-                const langName = i18n.getLanguageName(language);
                 await bot.sendMessage(chatId, `✅ ${i18n.t(language, 'languageChanged')}`);
 
-                // Проверяем, зарегистрирован ли пользователь
                 try {
-                    await axios.get(`${apiUrl}/api/bot/schedule/${chatId}`, { headers: { 'x-bot-secret': botApiSecret } });
-                    await bot.sendMessage(chatId, i18n.t(language, 'welcomeBack'), getMenuKeyboard(chatId, language));
+                    if (await hasRegisteredAccount(chatId)) {
+                        await bot.sendMessage(chatId, i18n.t(language, 'welcomeBack'), getMenuKeyboard(chatId, language));
+                    } else {
+                        await sendOnboardingIntro(chatId, language);
+                    }
                 } catch (error) {
-                    // ЕСЛИ НЕ ЗАРЕГИСТРИРОВАН -> БЕСШОВНЫЙ ОНБОРДИНГ
-                    await bot.sendMessage(chatId, i18n.t(language, 'welcomeOnboarding'), { parse_mode: 'HTML' });
-
-                    // Сразу переводим в режим ожидания логина
-                    userStates[chatId] = { state: 'awaiting_hemis_login', ts: Date.now() };
-                    await bot.sendMessage(chatId, i18n.t(language, 'enterHemisLogin'), {
-                        parse_mode: 'HTML',
-                        ...keyboards.removeKeyboard
-                    });
+                    console.error('Failed to resolve local registration state after language change:', error.message);
+                    await bot.sendMessage(chatId, i18n.t(language, 'serverError'));
                 }
             }
+        } else if (data === 'onboarding_start') {
+            await bot.answerCallbackQuery(query.id);
+            const language = await getUserLanguage(chatId);
+            userStates[chatId] = { state: 'awaiting_hemis_login', ts: Date.now() };
+            await bot.sendMessage(chatId, i18n.t(language, 'enterHemisLogin'), {
+                parse_mode: 'HTML',
+                ...keyboards.removeKeyboard
+            });
         }
     });
 
@@ -515,27 +571,20 @@ function startBot() {
                 let successCount = 0;
                 let failCount = 0;
 
-                // Отправляем
                 for (const item of list) {
                     try {
                         if (draft.photo) {
-                            // Если есть фото
-                            await bot.sendPhoto(item.telegramChatId, draft.photo, { caption: draft.text, parse_mode: 'HTML' });
+                            await sendPhotoSafe(item.telegramChatId, draft.photo, {
+                                caption: draft.text,
+                                parse_mode: 'HTML'
+                            });
                         } else {
-                            // Если только текст
-                            await bot.sendMessage(item.telegramChatId, draft.text, { parse_mode: 'HTML' });
+                            await sendSafe(item.telegramChatId, draft.text, { parse_mode: 'HTML' });
                         }
                         successCount++;
                     } catch (e) {
                         failCount++;
-                        await reportDeliveryFailure(
-                            item.telegramChatId,
-                            draft.target === 'groups' ? 'group' : 'private',
-                            e
-                        );
                     }
-                    // Пауза 30мс
-                    await new Promise(resolve => setTimeout(resolve, 30));
                 }
 
                 delete userStates[chatId];
@@ -698,52 +747,38 @@ function startBot() {
                 headers: { 'x-bot-secret': botApiSecret }
             });
 
-            let flow = resolveStartFlow({
+            const flow = resolveStartFlow({
                 chatType: msg.chat.type,
                 language: data.language,
                 isAdmin: String(chatId) === String(ADMIN_ID),
-                hasSchedule: false
+                hasSchedule: await hasRegisteredAccount(chatId)
             });
 
             if (flow.type === 'select_language') {
                 return bot.sendMessage(chatId, i18n.t('ru-RU', 'selectLanguage'), keyboards.getLanguageSelectionKeyboard());
             }
 
-            try {
-                await axios.get(`${apiUrl}/api/bot/schedule/${chatId}`, { headers: { 'x-bot-secret': botApiSecret } });
-                flow = resolveStartFlow({
-                    chatType: msg.chat.type,
-                    language: data.language,
-                    isAdmin: String(chatId) === String(ADMIN_ID),
-                    hasSchedule: true
-                });
-
+            if (flow.type === 'welcome_back') {
                 const menuKeyboard = flow.menuType === 'admin'
                     ? keyboards.getAdminMenu(flow.language)
                     : keyboards.getMainMenu(flow.language);
 
-                bot.sendMessage(chatId, i18n.t(flow.language, 'welcomeBack'), menuKeyboard);
-            } catch (error) {
-                flow = resolveStartFlow({
-                    chatType: msg.chat.type,
-                    language: data.language,
-                    isAdmin: String(chatId) === String(ADMIN_ID),
-                    hasSchedule: false
-                });
-
-                await bot.sendMessage(chatId, i18n.t(flow.language, 'welcomeOnboarding'), { parse_mode: 'HTML' });
-                userStates[chatId] = { state: flow.nextState, ts: Date.now() };
-                await bot.sendMessage(chatId, i18n.t(flow.language, 'enterHemisLogin'), {
-                    parse_mode: 'HTML',
-                    ...keyboards.removeKeyboard
-                });
+                return bot.sendMessage(chatId, i18n.t(flow.language, 'welcomeBack'), menuKeyboard);
             }
+
+            await sendOnboardingIntro(chatId, flow.language);
         } catch (error) {
-            const flow = resolveStartFlow({
-                chatType: msg.chat.type,
-                languageLookupFailed: true
-            });
-            bot.sendMessage(chatId, i18n.t(flow.language, 'selectLanguage'), keyboards.getLanguageSelectionKeyboard());
+            if (error.response?.status === 404) {
+                const flow = resolveStartFlow({
+                    chatType: msg.chat.type,
+                    languageLookupFailed: true
+                });
+                return bot.sendMessage(chatId, i18n.t(flow.language, 'selectLanguage'), keyboards.getLanguageSelectionKeyboard());
+            }
+
+            console.error('Start flow error:', error.message);
+            const language = await getUserLanguage(chatId);
+            bot.sendMessage(chatId, i18n.t(language, 'serverError'));
         }
     });
 
@@ -956,7 +991,13 @@ function startBot() {
     }, { scheduled: true, timezone: "Asia/Tashkent" });
 
     // --- ПРОВЕРКА НОВЫХ NB (Каждые 15 минут с 08:00 до 22:00) ---
-    cron.schedule('*/15 8-22 * * *', async () => {
+    cron.schedule(nbCheckCronExpression, async () => {
+        if (isNbCheckInProgress) {
+            console.log('NB check skipped: previous run is still in progress.');
+            return;
+        }
+
+        isNbCheckInProgress = true;
         try {
             // Запрашиваем у бэкенда список тех, у кого новые NB
             const response = await axios.post(`${apiUrl}/api/bot/check-new-absences`, {}, {
@@ -969,15 +1010,17 @@ function startBot() {
                 console.log(`Найдено ${notifications.length} новых NB. Рассылаю...`);
 
                 for (const notify of notifications) {
-                    // Получаем язык пользователя для уведомления
-                    let userLanguage = 'ru-RU';
-                    try {
-                        const { data } = await axios.get(`${apiUrl}/api/bot/language/${notify.chatId}`, {
-                            headers: { 'x-bot-secret': botApiSecret }
-                        });
-                        userLanguage = data.language || 'ru-RU';
-                    } catch (e) {
-                        // Используем язык по умолчанию
+                    let userLanguage = notify.language || 'ru-RU';
+
+                    if (!notify.language) {
+                        try {
+                            const { data } = await axios.get(`${apiUrl}/api/bot/language/${notify.chatId}`, {
+                                headers: { 'x-bot-secret': botApiSecret }
+                            });
+                            userLanguage = data.language || 'ru-RU';
+                        } catch (e) {
+                            // Используем язык по умолчанию
+                        }
                     }
 
                     const msg = formatNbNotification(notify, userLanguage);
@@ -991,6 +1034,8 @@ function startBot() {
             }
         } catch (error) {
             console.error('Ошибка Cron проверки NB:', error.message);
+        } finally {
+            isNbCheckInProgress = false;
         }
     }, { scheduled: true, timezone: "Asia/Tashkent" });
 

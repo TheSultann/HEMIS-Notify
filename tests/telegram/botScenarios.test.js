@@ -69,8 +69,8 @@ describe('Telegram bot scenarios', () => {
     test('language callback switches to onboarding flow for unregistered user', async () => {
         axiosMock.post.mockResolvedValue({ data: { success: true } });
         axiosMock.get.mockImplementation((url) => {
-            if (url.includes('/api/bot/schedule/1001')) {
-                return Promise.reject(new Error('not found'));
+            if (url.includes('/api/bot/me/1001')) {
+                return Promise.reject({ response: { status: 404 } });
             }
             return Promise.resolve({ data: { language: 'ru-RU' } });
         });
@@ -92,8 +92,31 @@ describe('Telegram bot scenarios', () => {
         expect(fakeBot.sendMessage).toHaveBeenCalledWith(
             1001,
             i18n.t('ru-RU', 'welcomeOnboarding'),
-            { parse_mode: 'HTML' }
+            expect.objectContaining({
+                parse_mode: 'HTML',
+                reply_markup: expect.objectContaining({
+                    inline_keyboard: [[
+                        expect.objectContaining({ callback_data: 'onboarding_start' })
+                    ]]
+                })
+            })
         );
+        expect(axiosMock.get.mock.calls.some(([url]) => url.includes('/api/bot/schedule/1001'))).toBe(false);
+    });
+
+    test('onboarding start button begins HEMIS authorization after intro', async () => {
+        axiosMock.get.mockResolvedValue({ data: { language: 'ru-RU' } });
+
+        await fakeBot.emitEvent('callback_query', {
+            id: 'cb-onboarding-start',
+            data: 'onboarding_start',
+            message: {
+                message_id: 51,
+                chat: { id: 1001, type: 'private' }
+            }
+        });
+
+        expect(fakeBot.answerCallbackQuery).toHaveBeenCalledWith('cb-onboarding-start');
         expect(fakeBot.sendMessage).toHaveBeenCalledWith(
             1001,
             i18n.t('ru-RU', 'enterHemisLogin'),
@@ -122,13 +145,46 @@ describe('Telegram bot scenarios', () => {
         );
     });
 
+    test('start command shows onboarding intro with explicit start button for unregistered user', async () => {
+        axiosMock.get.mockImplementation((url) => {
+            if (url.includes('/api/bot/language/1001')) {
+                return Promise.resolve({ data: { language: 'ru-RU' } });
+            }
+            if (url.includes('/api/bot/me/1001')) {
+                return Promise.reject({ response: { status: 404 } });
+            }
+            return Promise.resolve({ data: {} });
+        });
+
+        await fakeBot.emitText('/start');
+
+        expect(fakeBot.sendMessage).toHaveBeenCalledWith(
+            1001,
+            i18n.t('ru-RU', 'welcomeOnboarding'),
+            expect.objectContaining({
+                parse_mode: 'HTML',
+                reply_markup: expect.objectContaining({
+                    inline_keyboard: [[
+                        expect.objectContaining({ callback_data: 'onboarding_start' })
+                    ]]
+                })
+            })
+        );
+        expect(fakeBot.sendMessage).not.toHaveBeenCalledWith(
+            1001,
+            i18n.t('ru-RU', 'enterHemisLogin'),
+            expect.anything()
+        );
+        expect(axiosMock.get.mock.calls.some(([url]) => url.includes('/api/bot/schedule/1001'))).toBe(false);
+    });
+
     test('start command sends welcome back menu for registered admin user', async () => {
         axiosMock.get.mockImplementation((url) => {
             if (url.includes('/api/bot/language/9999')) {
                 return Promise.resolve({ data: { language: 'ru-RU' } });
             }
-            if (url.includes('/api/bot/schedule/9999')) {
-                return Promise.resolve({ data: { schedule: [], role: 'student' } });
+            if (url.includes('/api/bot/me/9999')) {
+                return Promise.resolve({ data: { data: { hemisLogin: 'admin-1' } } });
             }
             return Promise.resolve({ data: {} });
         });
@@ -149,6 +205,33 @@ describe('Telegram bot scenarios', () => {
                 expect.stringContaining('Рассылка')
             ])
         );
+        expect(axiosMock.get.mock.calls.some(([url]) => url.includes('/api/bot/schedule/9999'))).toBe(false);
+    });
+
+    test('language callback keeps registered user in welcome flow without touching live schedule', async () => {
+        axiosMock.post.mockResolvedValue({ data: { success: true } });
+        axiosMock.get.mockImplementation((url) => {
+            if (url.includes('/api/bot/me/1001')) {
+                return Promise.resolve({ data: { data: { hemisLogin: 'student-1' } } });
+            }
+            return Promise.resolve({ data: { language: 'ru-RU' } });
+        });
+
+        await fakeBot.emitEvent('callback_query', {
+            id: 'cb-registered',
+            data: 'lang_ru-RU',
+            message: {
+                message_id: 52,
+                chat: { id: 1001, type: 'private' }
+            }
+        });
+
+        expect(fakeBot.sendMessage).toHaveBeenCalledWith(
+            1001,
+            i18n.t('ru-RU', 'welcomeBack'),
+            expect.any(Object)
+        );
+        expect(axiosMock.get.mock.calls.some(([url]) => url.includes('/api/bot/schedule/1001'))).toBe(false);
     });
 
     test('schedule pagination callback edits schedule message', async () => {
@@ -299,6 +382,79 @@ describe('Telegram bot scenarios', () => {
             expect.stringContaining('Отправлено: 2'),
             { parse_mode: 'HTML' }
         );
+    });
+
+    test('admin broadcast retries after flood wait instead of counting the chat as failed', async () => {
+        axiosMock.get.mockImplementation((url) => {
+            if (url.includes('/api/bot/subscribers')) {
+                return Promise.resolve({
+                    data: [{ telegramChatId: '2001' }]
+                });
+            }
+            return Promise.resolve({ data: { language: 'ru-RU' } });
+        });
+
+        await fakeBot.emitText('рџ“ў Р Р°СЃСЃС‹Р»РєР°', {
+            chat: { id: 9999, type: 'private' },
+            from: { id: 9999 }
+        });
+        await fakeBot.emitEvent('callback_query', {
+            id: 'bc-retry-1',
+            data: 'bc_target_students',
+            message: {
+                message_id: 83,
+                chat: { id: 9999, type: 'private' }
+            }
+        });
+        await fakeBot.emitText('Retry message', {
+            chat: { id: 9999, type: 'private' },
+            from: { id: 9999 }
+        });
+
+        fakeBot.sendMessage.mockReset();
+        fakeBot.sendMessage
+            .mockImplementationOnce(async (chatId, text, options = {}) => ({
+                chat: { id: chatId },
+                text,
+                options,
+                message_id: 999
+            }))
+            .mockRejectedValueOnce({
+                message: 'ETELEGRAM: 429 Too Many Requests',
+                response: {
+                    statusCode: 429,
+                    body: {
+                        parameters: {
+                            retry_after: 0.001
+                        }
+                    }
+                }
+            })
+            .mockImplementation(async (chatId, text, options = {}) => ({
+                chat: { id: chatId },
+                text,
+                options,
+                message_id: 1000
+            }));
+
+        await fakeBot.emitEvent('callback_query', {
+            id: 'bc-retry-2',
+            data: 'bc_send',
+            message: {
+                message_id: 84,
+                chat: { id: 9999, type: 'private' }
+            }
+        });
+
+        expect(fakeBot.sendMessage).toHaveBeenCalledWith(
+            '2001',
+            'Retry message',
+            { parse_mode: 'HTML' }
+        );
+        const summaryCall = fakeBot.sendMessage.mock.calls.at(-1);
+        expect(summaryCall[0]).toBe(9999);
+        expect(summaryCall[2]).toEqual({ parse_mode: 'HTML' });
+        expect(axiosMock.post.mock.calls.some(([url]) => url.includes('/api/bot/delivery-failed'))).toBe(false);
     });
 
     test('registers three cron jobs and morning job sends group and personal schedule', async () => {
@@ -532,19 +688,14 @@ describe('Telegram bot scenarios', () => {
                                 diff: 2,
                                 total: 5,
                                 latestSubject: 'Physics',
-                                latestDate: Math.floor(new Date('2026-03-17T00:00:00.000Z').getTime() / 1000)
+                                latestDate: Math.floor(new Date('2026-03-17T00:00:00.000Z').getTime() / 1000),
+                                language: 'uz-UZ'
                             }
                         ]
                     }
                 });
             }
             return Promise.resolve({ data: { success: true } });
-        });
-        axiosMock.get.mockImplementation((url) => {
-            if (url.includes('/api/bot/language/1001')) {
-                return Promise.resolve({ data: { language: 'uz-UZ' } });
-            }
-            return Promise.resolve({ data: {} });
         });
 
         await fakeCron.jobs[2].handler();
@@ -559,6 +710,10 @@ describe('Telegram bot scenarios', () => {
             expect.stringContaining('Physics'),
             { parse_mode: 'HTML' }
         );
+        expect(axiosMock.get).not.toHaveBeenCalledWith(
+            expect.stringContaining('/api/bot/language/1001'),
+            expect.anything()
+        );
     });
 
     test('nb cron reports unavailable chat back to backend', async () => {
@@ -572,7 +727,8 @@ describe('Telegram bot scenarios', () => {
                                 diff: 1,
                                 total: 3,
                                 latestSubject: 'Physics',
-                                latestDate: Math.floor(new Date('2026-03-17T00:00:00.000Z').getTime() / 1000)
+                                latestDate: Math.floor(new Date('2026-03-17T00:00:00.000Z').getTime() / 1000),
+                                language: 'ru-RU'
                             }
                         ]
                     }
@@ -580,13 +736,6 @@ describe('Telegram bot scenarios', () => {
             }
 
             return Promise.resolve({ data: { success: true } });
-        });
-        axiosMock.get.mockImplementation((url) => {
-            if (url.includes('/api/bot/language/1001')) {
-                return Promise.resolve({ data: { language: 'ru-RU' } });
-            }
-
-            return Promise.resolve({ data: {} });
         });
         fakeBot.sendMessage.mockRejectedValueOnce(new Error('ETELEGRAM: 400 Bad Request: chat not found'));
 
@@ -597,5 +746,29 @@ describe('Telegram bot scenarios', () => {
             { chatId: '1001', chatType: 'private' },
             expect.any(Object)
         );
+    });
+
+    test('nb cron does not start a second check while the first one is still running', async () => {
+        let resolveCheck;
+        axiosMock.post.mockImplementation((url) => {
+            if (url.includes('/api/bot/check-new-absences')) {
+                return new Promise((resolve) => {
+                    resolveCheck = resolve;
+                });
+            }
+
+            return Promise.resolve({ data: { success: true } });
+        });
+
+        const firstRun = fakeCron.jobs[2].handler();
+        await Promise.resolve();
+        const secondRun = fakeCron.jobs[2].handler();
+        await Promise.resolve();
+
+        expect(axiosMock.post).toHaveBeenCalledTimes(1);
+
+        resolveCheck({ data: { notifications: [] } });
+        await firstRun;
+        await secondRun;
     });
 });

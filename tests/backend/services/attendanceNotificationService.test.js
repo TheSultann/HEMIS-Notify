@@ -57,7 +57,8 @@ describe('attendanceNotificationService', () => {
             lastSemesterCode: '2026S'
         });
         const notifications = [];
-        const latestDate = Math.floor(Date.parse('2026-03-10T00:00:00.000Z') / 1000);
+        const now = Date.now();
+        const latestDate = Math.floor((now - 5 * 24 * 60 * 60 * 1000) / 1000);
 
         await processAttendanceDiff({
             user,
@@ -71,7 +72,8 @@ describe('attendanceNotificationService', () => {
                 ]
             },
             notifications,
-            semesterCode: '2026S'
+            semesterCode: '2026S',
+            now
         });
 
         expect(notifications).toEqual([
@@ -80,7 +82,8 @@ describe('attendanceNotificationService', () => {
                 diff: 2,
                 total: 3,
                 latestSubject: 'Physics',
-                latestDate
+                latestDate,
+                language: 'ru-RU'
             }
         ]);
     });
