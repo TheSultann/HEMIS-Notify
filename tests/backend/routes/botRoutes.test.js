@@ -74,6 +74,7 @@ describe('/api/bot routes', () => {
         expect(user.fullName).toBe('Student One');
         expect(user.group).toBe('SE-101');
         expect(user.lastKnownAbsentHours).toBe(4);
+        expect(user.groupLinkHintShown).toBe(false);
         expect(user.hemisPassword).not.toBe('secret');
         expect(decrypt(user.hemisPassword)).toBe('secret');
     });
@@ -109,6 +110,7 @@ describe('/api/bot routes', () => {
         expect(user.hemisLogin).toBe('teacher-1');
         expect(user.language).toBe('uz-UZ');
         expect(user.role).toBe('teacher');
+        expect(user.groupLinkHintShown).toBe(false);
     });
 
     test('register returns 401 on invalid HEMIS credentials', async () => {
@@ -147,7 +149,8 @@ describe('/api/bot routes', () => {
             hemisLogin: 's1001',
             hemisPassword: encrypt('secret'),
             telegramChatId: '1001',
-            group: 'SE-101'
+            group: 'SE-101',
+            language: 'uz-UZ'
         });
 
         await request(app)
@@ -163,6 +166,8 @@ describe('/api/bot routes', () => {
             .expect(409);
 
         expect(await Group.countDocuments()).toBe(1);
+        const group = await Group.findOne({ groupName: 'SE-101' }).lean();
+        expect(group.language).toBe('uz-UZ');
     });
 
     test('unbind-group deletes linked group and returns 404 when chat is not bound', async () => {
@@ -208,7 +213,8 @@ describe('/api/bot routes', () => {
             hemisPassword: encrypt('secret'),
             telegramChatId: '1001',
             fullName: 'Student One',
-            group: 'SE-101'
+            group: 'SE-101',
+            language: 'uz-UZ'
         });
 
         const response = await request(app)
@@ -220,7 +226,8 @@ describe('/api/bot routes', () => {
         expect(response.body).toMatchObject({
             success: true,
             groupName: 'SE-101',
-            studentName: 'Student One'
+            studentName: 'Student One',
+            language: 'uz-UZ'
         });
     });
 
@@ -268,7 +275,8 @@ describe('/api/bot routes', () => {
                 group: 'SE-101',
                 hemisLogin: 'student-1',
                 role: 'student',
-                language: 'uz-UZ'
+                language: 'uz-UZ',
+                groupLinkHintShown: false
             }
         });
 
@@ -279,6 +287,31 @@ describe('/api/bot routes', () => {
                 success: true,
                 language: 'uz-UZ'
             });
+    });
+
+    test('group-link-hint-shown marks the per-login hint as shown', async () => {
+        await User.create({
+            hemisLogin: 'student-1',
+            hemisPassword: encrypt('secret'),
+            telegramChatId: '1001',
+            role: 'student',
+            groupLinkHintShown: false
+        });
+
+        await request(app)
+            .post('/api/bot/group-link-hint-shown')
+            .set(authHeaders)
+            .send({ chatId: '1001' })
+            .expect(200, { success: true });
+
+        const user = await User.findOne({ telegramChatId: '1001' }).lean();
+        expect(user.groupLinkHintShown).toBe(true);
+
+        await request(app)
+            .post('/api/bot/group-link-hint-shown')
+            .set(authHeaders)
+            .send({ chatId: '404' })
+            .expect(404, { message: 'User not found' });
     });
 
     test('schedule route re-authenticates when token is missing', async () => {
@@ -334,7 +367,7 @@ describe('/api/bot routes', () => {
     });
 
     test('group schedule by chat id resolves bound group through a registered student', async () => {
-        await Group.create({ groupName: 'SE-101', telegramChatId: 'group-chat-1' });
+        await Group.create({ groupName: 'SE-101', telegramChatId: 'group-chat-1', language: 'uz-UZ' });
         await User.create({
             hemisLogin: 'student-1',
             hemisPassword: encrypt('secret'),
@@ -355,7 +388,8 @@ describe('/api/bot routes', () => {
         expect(response.body).toEqual({
             schedule: [{ lesson_date: 1710000000 }],
             role: 'student',
-            groupName: 'SE-101'
+            groupName: 'SE-101',
+            language: 'uz-UZ'
         });
 
         const user = await User.findOne({ telegramChatId: '1001' }).lean();
@@ -381,7 +415,7 @@ describe('/api/bot routes', () => {
     });
 
     test('group schedule falls back to another exact group member when the first candidate fails', async () => {
-        await Group.create({ groupName: 'SE-101', telegramChatId: 'group-chat-1' });
+        await Group.create({ groupName: 'SE-101', telegramChatId: 'group-chat-1', language: 'uz-UZ' });
         await User.create([
             {
                 hemisLogin: 'student-1',
@@ -416,7 +450,8 @@ describe('/api/bot routes', () => {
         expect(response.body).toEqual({
             schedule: [{ lesson_date: 1710000000 }],
             role: 'student',
-            groupName: 'SE-101'
+            groupName: 'SE-101',
+            language: 'uz-UZ'
         });
 
         const secondUser = await User.findOne({ telegramChatId: '1002' }).lean();
@@ -742,7 +777,7 @@ describe('/api/bot routes', () => {
                 lastActiveAt: now
             }
         ]);
-        await Group.create({ groupName: 'SE-101', telegramChatId: 'group-chat-1' });
+        await Group.create({ groupName: 'SE-101', telegramChatId: 'group-chat-1', language: 'uz-UZ' });
 
         const response = await request(app)
             .get('/api/bot/stats')
@@ -798,6 +833,7 @@ describe('/api/bot routes', () => {
             {
                 telegramChatId: 'group-chat-1',
                 groupName: 'SE-101',
+                language: 'uz-UZ',
                 lastScheduleMessageId: null
             }
         ]);

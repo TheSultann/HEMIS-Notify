@@ -208,6 +208,20 @@ describe('Telegram bot scenarios', () => {
         expect(axiosMock.get.mock.calls.some(([url]) => url.includes('/api/bot/schedule/9999'))).toBe(false);
     });
 
+    test('start command in group falls back to Uzbek greeting', async () => {
+        axiosMock.get.mockRejectedValue({ response: { status: 404 } });
+
+        await fakeBot.emitText('/start', {
+            chat: { id: -100, type: 'group' },
+            from: { id: 500 }
+        });
+
+        expect(fakeBot.sendMessage).toHaveBeenCalledWith(
+            -100,
+            i18n.t('uz-UZ', 'helloGroup')
+        );
+    });
+
     test('language callback keeps registered user in welcome flow without touching live schedule', async () => {
         axiosMock.post.mockResolvedValue({ data: { success: true } });
         axiosMock.get.mockImplementation((url) => {
@@ -283,7 +297,116 @@ describe('Telegram bot scenarios', () => {
         );
     });
 
-    test('bind_me blocks non-admin user in group chat', async () => {
+    test('group schedule reports missing binding in Uzbek', async () => {
+        axiosMock.get.mockImplementation((url) => {
+            if (url.includes('/api/bot/language/-100')) {
+                return Promise.resolve({ data: { language: 'uz-UZ' } });
+            }
+            if (url.includes('/api/bot/schedule/group-by-chat-id/-100')) {
+                return Promise.reject({ response: { status: 404, data: { message: 'not bound' } } });
+            }
+            return Promise.resolve({ data: {} });
+        });
+
+        await fakeBot.emitText('/schedule_today', {
+            chat: { id: -100, type: 'group' },
+            from: { id: 500 }
+        });
+
+        expect(fakeBot.sendMessage).toHaveBeenCalledWith(
+            -100,
+            "❌ Bu chat hech qaysi guruhga bog'lanmagan."
+        );
+    });
+
+    test('first lessons button after login shows group binding hint once and marks it as shown', async () => {
+        const lessonDate = Math.floor(Date.now() / 1000);
+        let hintShown = false;
+
+        axiosMock.get.mockImplementation((url) => {
+            if (url.includes('/api/bot/language/1001')) {
+                return Promise.resolve({ data: { language: 'uz-UZ' } });
+            }
+            if (url.includes('/api/bot/schedule/1001')) {
+                return Promise.resolve({
+                    data: {
+                        role: 'student',
+                        schedule: [{
+                            lesson_date: lessonDate,
+                            time: '08:30',
+                            subjectId: {
+                                name: 'Math',
+                                teacherName: 'Teacher',
+                                groupName: 'SE-101',
+                                auditoriumName: 'A-1',
+                                lessonType: 'Lecture'
+                            }
+                        }]
+                    }
+                });
+            }
+            if (url.includes('/api/bot/me/1001')) {
+                return Promise.resolve({
+                    data: {
+                        data: {
+                            role: 'student',
+                            group: 'SE-101',
+                            groupLinkHintShown: hintShown
+                        }
+                    }
+                });
+            }
+
+            return Promise.resolve({ data: {} });
+        });
+        axiosMock.post.mockImplementation((url) => {
+            if (url.includes('/api/bot/group-link-hint-shown')) {
+                hintShown = true;
+                return Promise.resolve({ data: { success: true } });
+            }
+
+            return Promise.resolve({ data: { success: true } });
+        });
+
+        await fakeBot.emitText(i18n.t('uz-UZ', 'lessons'));
+        await fakeBot.emitText(i18n.t('uz-UZ', 'lessons'));
+
+        const hintCalls = fakeBot.sendMessage.mock.calls.filter(
+            ([chatId, text, options]) => chatId === 1001 &&
+                text === i18n.t('uz-UZ', 'groupLinkHint') &&
+                options?.parse_mode === 'HTML'
+        );
+
+        expect(hintCalls).toHaveLength(1);
+        expect(axiosMock.post).toHaveBeenCalledWith(
+            expect.stringContaining('/api/bot/group-link-hint-shown'),
+            { chatId: '1001' },
+            expect.any(Object)
+        );
+    });
+
+    test('bind_me allows regular group members to bind their HEMIS group', async () => {
+        axiosMock.get.mockImplementation((url) => {
+            if (url.includes('/api/bot/language/500')) {
+                return Promise.resolve({ data: { language: 'uz-UZ' } });
+            }
+
+            return Promise.resolve({ data: {} });
+        });
+        axiosMock.post.mockImplementation((url) => {
+            if (url.includes('/api/bot/bind-by-user')) {
+                return Promise.resolve({
+                    data: {
+                        success: true,
+                        groupName: 'SE-101',
+                        studentName: 'Student One',
+                        language: 'uz-UZ'
+                    }
+                });
+            }
+
+            return Promise.resolve({ data: { success: true } });
+        });
         fakeBot.getChatMember.mockResolvedValue({ status: 'member' });
 
         await fakeBot.emitText('/bind_me', {
@@ -291,9 +414,19 @@ describe('Telegram bot scenarios', () => {
             from: { id: 500 }
         });
 
+        expect(fakeBot.getChatMember).not.toHaveBeenCalled();
+        expect(axiosMock.post).toHaveBeenCalledWith(
+            expect.stringContaining('/api/bot/bind-by-user'),
+            {
+                groupChatId: '-100',
+                userTelegramId: '500'
+            },
+            expect.any(Object)
+        );
         expect(fakeBot.sendMessage).toHaveBeenCalledWith(
             -100,
-            'Только администраторы могут привязывать группу.'
+            expect.stringContaining('SE-101'),
+            expect.objectContaining({ parse_mode: 'HTML' })
         );
     });
 
@@ -609,7 +742,7 @@ describe('Telegram bot scenarios', () => {
         axiosMock.get.mockResolvedValue({ data: { language: 'ru-RU' } });
         axiosMock.post.mockImplementation((url) => {
             if (url.includes('/api/bot/unbind-group')) {
-                return Promise.resolve({ data: { success: true, message: 'Group unbound.' } });
+                return Promise.resolve({ data: { success: true, groupName: 'SE-101', language: 'ru-RU' } });
             }
             return Promise.resolve({ data: { success: true } });
         });
@@ -627,7 +760,29 @@ describe('Telegram bot scenarios', () => {
         );
         expect(fakeBot.sendMessage).toHaveBeenCalledWith(
             -100,
-            expect.stringContaining('Group unbound.')
+            expect.stringContaining('SE-101'),
+            expect.objectContaining({ parse_mode: 'HTML' })
+        );
+    });
+
+    test('unbind_group reports missing group binding in Uzbek', async () => {
+        axiosMock.get.mockResolvedValue({ data: { language: 'uz-UZ' } });
+        axiosMock.post.mockImplementation((url) => {
+            if (url.includes('/api/bot/unbind-group')) {
+                return Promise.reject({ response: { status: 404, data: { message: 'not bound' } } });
+            }
+            return Promise.resolve({ data: { success: true } });
+        });
+        fakeBot.getChatMember.mockResolvedValue({ status: 'administrator' });
+
+        await fakeBot.emitText('/unbind_group', {
+            chat: { id: -100, type: 'group' },
+            from: { id: 500 }
+        });
+
+        expect(fakeBot.sendMessage).toHaveBeenCalledWith(
+            -100,
+            "❌ Bu chat hech qaysi guruhga bog'lanmagan."
         );
     });
 

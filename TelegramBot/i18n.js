@@ -11,7 +11,7 @@ const translations = {
         // Приветствие
         welcome: '👋 Добро пожаловать! Нажмите кнопку внизу для входа.',
         welcomeBack: '👋 С возвращением! Воспользуйтесь меню внизу.',
-        helloGroup: '👋 Привет! Я бот HEMIS. В группах используйте /bind_me.',
+        helloGroup: '👋 Привет! Я бот HEMIS. Чтобы подключить расписание, любой зарегистрированный студент может написать /bind_me в этой группе.',
 
         // Расписание
         scheduleFor: 'Расписание на',
@@ -91,6 +91,7 @@ const translations = {
         onlyAdmins: 'Только для админов.',
         groupBound: 'Группа успешно привязана к этому чату.',
         groupError: 'Ошибка',
+        groupLinkHint: '👥 <b>Хотите расписание прямо в группе?</b>\n\n1️⃣ Добавьте этого бота в чат вашей группы.\n2️⃣ Дайте боту права админа, чтобы он мог закреплять расписание.\n3️⃣ В группе напишите команду:\n\n<code>/bind_me</code>\n\nПосле этого расписание будет приходить в группу автоматически 📌',
 
         // Команды
         mainMenu: '🏠 Главное меню',
@@ -106,7 +107,7 @@ const translations = {
         // Приветствие
         welcome: '👋 Xush kelibsiz! Kirish uchun quyidagi tugmani bosing.',
         welcomeBack: '👋 Xush kelibsiz! Quyidagi menyudan foydalaning.',
-        helloGroup: '👋 Salom! Men HEMIS botiman. Guruhlarda /bind_me dan foydalaning.',
+        helloGroup: '👋 Salom! Men HEMIS botiman. Jadvalni ulash uchun ro\'yxatdan o\'tgan istalgan talaba shu guruhda /bind_me yozishi mumkin.',
 
         // Расписание
         scheduleFor: 'Jadval',
@@ -185,6 +186,7 @@ const translations = {
         onlyAdmins: 'Faqat adminlar uchun.',
         groupBound: 'Guruh muvaffaqiyatli ushbu chatga bog\'landi.',
         groupError: 'Xatolik',
+        groupLinkHint: '👥 <b>Jadval guruhingizga ham kelishini xohlaysizmi?</b>\n\n1️⃣ Bu botni guruh chatiga qo\'shing.\n2️⃣ Bot jadvalni biriktira olishi uchun unga administrator huquqini bering.\n3️⃣ Guruh ichida shu buyruqni yozing:\n\n<code>/bind_me</code>\n\nShundan keyin jadval guruhga avtomatik yuboriladi 📌',
 
         // Команды
         mainMenu: '🏠 Asosiy menyu',

@@ -13,6 +13,11 @@ const { encrypt, decrypt } = require('../utils/crypto');
 const activeUserFilter = {
     hemisLogin: { $not: /^temp_/i }
 };
+const DEFAULT_GROUP_LANGUAGE = 'uz-UZ';
+
+function normalizeBotLanguage(language, fallback = 'ru-RU') {
+    return ['ru-RU', 'uz-UZ'].includes(language) ? language : fallback;
+}
 const DEFAULT_RATE_LIMIT_MESSAGE = 'HEMIS временно ограничил вход. Попробуйте позже.';
 
 function isUserRateLimited(user, now = Date.now()) {
@@ -159,6 +164,7 @@ router.post('/register', protectBotRoute, async (req, res) => {
             user.group = profileData.groupName;
             user.lastKnownAbsentHours = initialAbsentHours;
             user.lastSemesterCode = initialSemesterCode;
+            user.groupLinkHintShown = false;
 
             // Сохраняем язык, если он был установлен
             if (existingLanguage) {
@@ -176,7 +182,8 @@ router.post('/register', protectBotRoute, async (req, res) => {
                 role: profileData.isStudent ? 'student' : 'teacher',
                 group: profileData.groupName,
                 lastKnownAbsentHours: initialAbsentHours,
-                lastSemesterCode: initialSemesterCode
+                lastSemesterCode: initialSemesterCode,
+                groupLinkHintShown: false
                 // Язык по умолчанию null - будет выбран при первом запуске
             });
         }
@@ -194,7 +201,7 @@ router.post('/register', protectBotRoute, async (req, res) => {
 });
 
 router.post('/bind-group', protectBotRoute, async (req, res) => {
-    const { groupName, chatId } = req.body;
+    const { groupName, chatId, language } = req.body;
     if (!groupName || !chatId) {
         return res.status(400).json({ message: 'Group Name and Chat ID are required' });
     }
@@ -209,19 +216,29 @@ router.post('/bind-group', protectBotRoute, async (req, res) => {
             return res.status(404).json({ message: `Сначала хотя бы один студент из группы "${groupName}" должен привязать свой аккаунт к боту.` });
         }
 
+        const groupLanguage = normalizeBotLanguage(
+            language,
+            normalizeBotLanguage(studentInGroup.language, DEFAULT_GROUP_LANGUAGE)
+        );
         let group = await Group.findOne({ telegramChatId: chatId });
         if (group) {
             group.groupName = groupName;
+            group.language = groupLanguage;
         } else {
             const existingGroupByName = await Group.findOne({ groupName });
             if (existingGroupByName) {
                 return res.status(409).json({ message: `Группа "${groupName}" уже привязана к другому чату.` });
             }
-            group = new Group({ groupName, telegramChatId: chatId });
+            group = new Group({ groupName, telegramChatId: chatId, language: groupLanguage });
         }
 
         await group.save();
-        res.status(200).json({ success: true, message: `Группа "${groupName}" успешно привязана к этому чату.` });
+        res.status(200).json({
+            success: true,
+            message: `Группа "${groupName}" успешно привязана к этому чату.`,
+            groupName,
+            language: groupLanguage
+        });
 
     } catch (error) {
         if (error.code === 11000) {
@@ -248,7 +265,12 @@ router.post('/unbind-group', protectBotRoute, async (req, res) => {
             return res.status(404).json({ message: 'Этот чат не был привязан ни к одной группе.' });
         }
 
-        res.status(200).json({ success: true, message: `Группа "${deletedGroup.groupName}" успешно отвязана.` });
+        res.status(200).json({
+            success: true,
+            message: `Группа "${deletedGroup.groupName}" успешно отвязана.`,
+            groupName: deletedGroup.groupName,
+            language: normalizeBotLanguage(deletedGroup.language, DEFAULT_GROUP_LANGUAGE)
+        });
 
     } catch (error) {
         console.error('Unbind group error:', error);
@@ -373,8 +395,11 @@ router.post('/check-new-absences', protectBotRoute, async (req, res) => {
 
 router.get('/groups', protectBotRoute, async (req, res) => {
     try {
-        const groups = await Group.find().select('telegramChatId groupName lastScheduleMessageId -_id');
-        res.json(groups);
+        const groups = await Group.find().select('telegramChatId groupName language lastScheduleMessageId -_id').lean();
+        res.json(groups.map((group) => ({
+            ...group,
+            language: normalizeBotLanguage(group.language, DEFAULT_GROUP_LANGUAGE)
+        })));
     } catch (error) {
         console.error('Get groups error:', error);
         res.status(500).json({ message: 'Server error' });
@@ -425,7 +450,7 @@ router.get('/me/:chatId', protectBotRoute, async (req, res) => {
     try {
         const { chatId } = req.params;
         // Возвращаем только нужные поля, пароль и токен не нужны
-        const user = await User.findOne({ telegramChatId: chatId }).select('fullName group hemisLogin role language -_id');
+        const user = await User.findOne({ telegramChatId: chatId }).select('fullName group hemisLogin role language groupLinkHintShown -_id');
 
         if (!user) {
             return res.status(404).json({ message: 'User not found' });
@@ -439,16 +464,48 @@ router.get('/me/:chatId', protectBotRoute, async (req, res) => {
 });
 
 // --- ЭНДПОИНТ: Получение языка пользователя ---
-router.get('/language/:chatId', protectBotRoute, async (req, res) => {
+router.post('/group-link-hint-shown', protectBotRoute, async (req, res) => {
     try {
-        const { chatId } = req.params;
-        const user = await User.findOne({ telegramChatId: chatId }).select('language -_id');
+        const { chatId } = req.body;
+        if (!chatId) {
+            return res.status(400).json({ message: 'Chat ID is required' });
+        }
+
+        const user = await User.findOneAndUpdate(
+            { telegramChatId: chatId },
+            { groupLinkHintShown: true },
+            { new: true }
+        ).select('telegramChatId -_id');
 
         if (!user) {
             return res.status(404).json({ message: 'User not found' });
         }
 
-        res.json({ success: true, language: user.language || null });
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Set group link hint shown error:', error);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+router.get('/language/:chatId', protectBotRoute, async (req, res) => {
+    try {
+        const { chatId } = req.params;
+        const user = await User.findOne({ telegramChatId: chatId }).select('language -_id');
+
+        if (user) {
+            return res.json({ success: true, language: user.language || null });
+        }
+
+        const group = await Group.findOne({ telegramChatId: chatId }).select('language -_id');
+        if (group) {
+            return res.json({
+                success: true,
+                language: normalizeBotLanguage(group.language, DEFAULT_GROUP_LANGUAGE)
+            });
+        }
+
+        res.status(404).json({ message: 'User not found' });
     } catch (error) {
         console.error('Get language error:', error);
         res.status(500).json({ message: 'Server error' });
@@ -525,10 +582,10 @@ function sortGroupCandidates(left, right) {
     return new Date(right.updatedAt || 0).getTime() - new Date(left.updatedAt || 0).getTime();
 }
 
-async function getGroupScheduleForUser(user) {
+async function getGroupScheduleForUser(user, language) {
     const plainPassword = decrypt(user.hemisPassword);
     let hemisToken = user.hemisToken;
-    const userLanguage = user.language || 'ru-RU';
+    const userLanguage = normalizeBotLanguage(language, normalizeBotLanguage(user.language, DEFAULT_GROUP_LANGUAGE));
 
     if (isUserRateLimited(user)) {
         throw { status: 429, message: DEFAULT_RATE_LIMIT_MESSAGE };
@@ -588,7 +645,7 @@ async function getGroupScheduleForUser(user) {
     return { schedule: scheduleResult, role: 'student' };
 }
 
-async function getGroupSchedule(groupName) {
+async function getGroupSchedule(groupName, language) {
     const candidates = await User.find({
         ...activeUserFilter,
         group: getExactGroupMatcher(groupName)
@@ -603,7 +660,7 @@ async function getGroupSchedule(groupName) {
 
     for (const candidate of candidates.sort(sortGroupCandidates)) {
         try {
-            return await getGroupScheduleForUser(candidate);
+            return await getGroupScheduleForUser(candidate, language);
         } catch (error) {
             if (error?.status === 429) {
                 sawRateLimitedCandidate = true;
@@ -626,8 +683,10 @@ async function getGroupSchedule(groupName) {
 router.get('/schedule/group/:groupName', protectBotRoute, async (req, res) => {
     try {
         const { groupName } = req.params;
-        const result = await getGroupSchedule(groupName);
-        res.json(result);
+        const group = await Group.findOne({ groupName }).select('language -_id').lean();
+        const language = normalizeBotLanguage(group?.language, DEFAULT_GROUP_LANGUAGE);
+        const result = await getGroupSchedule(groupName, language);
+        res.json({ ...result, language });
     } catch (error) {
         console.error(`Get schedule for group ${req.params.groupName} error:`, error.message || error);
         res.status(error.status || 500).json({ message: error.message || 'Server error' });
@@ -641,8 +700,9 @@ router.get('/schedule/group-by-chat-id/:chatId', protectBotRoute, async (req, re
         if (!group) {
             return res.status(404).json({ message: 'Этот чат не привязан к академической группе.' });
         }
-        const result = await getGroupSchedule(group.groupName);
-        res.json({ ...result, groupName: group.groupName });
+        const language = normalizeBotLanguage(group.language, DEFAULT_GROUP_LANGUAGE);
+        const result = await getGroupSchedule(group.groupName, language);
+        res.json({ ...result, groupName: group.groupName, language });
     } catch (error) {
         console.error(`Get schedule for group chat ${req.params.chatId} error:`, error.message || error);
         res.status(error.status || 500).json({ message: error.message || 'Server error' });
@@ -911,23 +971,25 @@ router.post('/bind-by-user', protectBotRoute, async (req, res) => {
         }
 
         const groupName = student.group;
+        const groupLanguage = normalizeBotLanguage(student.language, DEFAULT_GROUP_LANGUAGE);
 
         // 2. Привязываем группу (копируем логику из bind-group)
         let group = await Group.findOne({ telegramChatId: groupChatId });
         if (group) {
             group.groupName = groupName;
+            group.language = groupLanguage;
         } else {
             // Проверяем, не занята ли группа другим чатом
             const existing = await Group.findOne({ groupName });
             if (existing) {
                 return res.status(409).json({ message: `Группа "${groupName}" уже привязана к другому чату.` });
             }
-            group = new Group({ groupName, telegramChatId: groupChatId });
+            group = new Group({ groupName, telegramChatId: groupChatId, language: groupLanguage });
         }
 
         await group.save();
 
-        res.json({ success: true, groupName: groupName, studentName: student.fullName });
+        res.json({ success: true, groupName: groupName, studentName: student.fullName, language: groupLanguage });
 
     } catch (error) {
         console.error('Bind by user error:', error);

@@ -28,6 +28,7 @@ const UserSchema = new mongoose.Schema({
     lastKnownAbsentHours: { type: Number, default: -1 },
     lastSemesterCode: { type: String, default: null }, // Семестр, к которому относится lastKnownAbsentHours
     language: { type: String, enum: ['ru-RU', 'uz-UZ'], default: null },
+    groupLinkHintShown: { type: Boolean, default: false },
 
     // --- НОВЫЕ ПОЛЯ ДЛЯ СТАТИСТИКИ ---
     isBlocked: { type: Boolean, default: false }, // Заблокировал ли юзер бота

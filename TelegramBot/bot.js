@@ -37,44 +37,76 @@ function startBot() {
     const bot = new TelegramBot(token, { polling: true });
     console.log('Телеграм-бот запущен...');
 
+    const DEFAULT_GROUP_LANGUAGE = 'uz-UZ';
+    const commandSets = {
+        'ru-RU': {
+            default: [
+                { command: 'start', description: '👋 Перезапуск' }
+            ],
+            group: [
+                { command: 'start', description: '👋 Приветствие' },
+                { command: 'schedule_today', description: '📅 Расписание группы' },
+                { command: 'schedule_tomorrow', description: '📅 Расписание на завтра' },
+                { command: 'bind_me', description: '🔗 Привязать мою группу' },
+                { command: 'unbind_group', description: '❌ Отвязать группу' }
+            ],
+            private: [
+                { command: 'start', description: '🏠 Главное меню' },
+                { command: 'schedule_today', description: '📅 Расписание на сегодня' },
+                { command: 'schedule_tomorrow', description: '📅 Расписание на завтра' },
+                { command: 'me', description: '👤 Мой профиль' },
+                { command: 'login', description: '🔑 Вход в систему' },
+                { command: 'logout', description: '🚪 Выйти из системы' }
+            ]
+        },
+        'uz-UZ': {
+            default: [
+                { command: 'start', description: '👋 Qayta boshlash' }
+            ],
+            group: [
+                { command: 'start', description: '👋 Salomlashish' },
+                { command: 'schedule_today', description: '📅 Guruh jadvali' },
+                { command: 'schedule_tomorrow', description: '📅 Ertangi jadval' },
+                { command: 'bind_me', description: "🔗 Guruhimni bog'lash" },
+                { command: 'unbind_group', description: '❌ Guruhni uzish' }
+            ],
+            private: [
+                { command: 'start', description: '🏠 Asosiy menyu' },
+                { command: 'schedule_today', description: '📅 Bugungi jadval' },
+                { command: 'schedule_tomorrow', description: '📅 Ertangi jadval' },
+                { command: 'me', description: '👤 Profilim' },
+                { command: 'login', description: '🔑 Tizimga kirish' },
+                { command: 'logout', description: '🚪 Tizimdan chiqish' }
+            ]
+        }
+    };
+
+    function normalizeBotLanguage(language, fallback = 'ru-RU') {
+        return commandSets[language] ? language : fallback;
+    }
+
+    function getCommandSet(type, language) {
+        return commandSets[normalizeBotLanguage(language, DEFAULT_GROUP_LANGUAGE)][type];
+    }
+
+    async function setGroupChatCommands(chatId, language) {
+        const groupLanguage = normalizeBotLanguage(language, DEFAULT_GROUP_LANGUAGE);
+        await bot.setMyCommands(getCommandSet('group', groupLanguage), {
+            scope: { type: 'chat', chat_id: String(chatId) }
+        });
+        await bot.setMyCommands(getCommandSet('group', groupLanguage), {
+            scope: { type: 'chat_administrators', chat_id: String(chatId) }
+        });
+    }
 
     (async () => {
         try {
-            // 1. Дефолт (пусто или минимум)
-            await bot.setMyCommands([
-                { command: '/start', description: '👋 Перезапуск' }
-            ], { scope: { type: 'default' } });
+            await bot.setMyCommands(getCommandSet('default', DEFAULT_GROUP_LANGUAGE), { scope: { type: 'default' } });
+            await bot.setMyCommands(getCommandSet('group', DEFAULT_GROUP_LANGUAGE), { scope: { type: 'all_group_chats' } });
+            await bot.setMyCommands(getCommandSet('group', DEFAULT_GROUP_LANGUAGE), { scope: { type: 'all_chat_administrators' } });
+            await bot.setMyCommands(getCommandSet('private', DEFAULT_GROUP_LANGUAGE), { scope: { type: 'all_private_chats' } });
 
-            // 2. Для ОБЫЧНЫХ участников групп (только расписание)
-            await bot.setMyCommands([
-                { command: '/start', description: '👋 Приветствие' },
-                { command: '/schedule_today', description: '📅 Расписание группы' },
-                { command: '/schedule_tomorrow', description: '📅 Расписание на завтра' },
-                { command: '/bind_me', description: '🔗 Привязать мою группу' },
-                { command: '/unbind_group', description: '❌ Отвязать группу' }
-            ], { scope: { type: 'all_group_chats' } });
-
-            // 3. Для АДМИНОВ групп (добавляем Unbind)
-            await bot.setMyCommands([
-                { command: '/start', description: '👋 Приветствие' },
-                { command: '/schedule_today', description: '📅 Расписание группы' },
-                { command: '/schedule_tomorrow', description: '📅 Расписание на завтра' },
-                { command: '/bind_me', description: '🔗 Привязать мою группу' },
-                { command: '/unbind_group', description: '❌ Отвязать группу' } // <--- НОВАЯ
-
-            ], { scope: { type: 'all_chat_administrators' } });
-
-            // 4. Для ЛИЧКИ (полный доступ)
-            await bot.setMyCommands([
-                { command: '/start', description: '🏠 Главное меню' },
-                { command: '/schedule_today', description: '📅 Расписание на сегодня' },
-                { command: '/schedule_tomorrow', description: '📅 Расписание на завтра' },
-                { command: '/me', description: '👤 Мой профиль' },
-                { command: '/login', description: '🔑 Вход в систему' },
-                { command: '/logout', description: '🚪 Выйти из системы' }
-            ], { scope: { type: 'all_private_chats' } });
-
-            console.log('✅ Меню команд обновлено (unbind добавлен админам).');
+            console.log('✅ Меню команд обновлено.');
         } catch (error) {
             console.error('❌ Ошибка при обновлении меню:', error.message);
         }
@@ -134,16 +166,97 @@ function startBot() {
         }
     });
 
-    // Получение языка пользователя
-    async function getUserLanguage(chatId) {
+    async function getStoredLanguage(chatId, fallback = 'ru-RU') {
         try {
             const { data } = await axios.get(`${apiUrl}/api/bot/language/${chatId}`, {
                 headers: { 'x-bot-secret': botApiSecret }
             });
-            return data.language || 'ru-RU';
+            return normalizeBotLanguage(data.language, fallback);
         } catch (error) {
-            return 'ru-RU'; // Fallback to Russian
+            return fallback;
         }
+    }
+
+    // Получение языка пользователя
+    async function getUserLanguage(chatId) {
+        return getStoredLanguage(chatId, 'ru-RU');
+    }
+
+    async function getGroupLanguage(chatId) {
+        return getStoredLanguage(chatId, DEFAULT_GROUP_LANGUAGE);
+    }
+
+    function getGroupBindText(language, key, data = {}) {
+        const lang = normalizeBotLanguage(language, DEFAULT_GROUP_LANGUAGE);
+
+        const texts = {
+            onlyGroup: {
+                'ru-RU': 'Эта команда работает только в группах.',
+                'uz-UZ': 'Bu buyruq faqat guruhlarda ishlaydi.'
+            },
+            userNotFound: {
+                'ru-RU': '❌ Вы не зарегистрированы в боте.\n\nЗайдите в ЛС к @HEMISnotify_bot, нажмите /start и войдите в систему, затем вернитесь сюда и нажмите /bind_me.',
+                'uz-UZ': "❌ Siz botda ro'yxatdan o'tmagansiz.\n\n@HEMISnotify_bot ga shaxsiy xabar yozing, /start ni bosing va tizimga kiring. Keyin shu guruhga qaytib /bind_me ni bosing."
+            },
+            errorPrefix: {
+                'ru-RU': '❌ Ошибка',
+                'uz-UZ': '❌ Xatolik'
+            },
+            groupNotBound: {
+                'ru-RU': '❌ Этот чат не привязан ни к одной группе.',
+                'uz-UZ': "❌ Bu chat hech qaysi guruhga bog'lanmagan."
+            },
+            groupAlreadyBound: {
+                'ru-RU': '❌ Эта группа уже привязана к другому чату.',
+                'uz-UZ': "❌ Bu guruh boshqa chatga bog'langan."
+            },
+            noGroupInProfile: {
+                'ru-RU': '❌ В вашем профиле не указана группа.',
+                'uz-UZ': "❌ Profilingizda guruh ko'rsatilmagan."
+            },
+            genericGroupError: {
+                'ru-RU': '❌ Произошла ошибка. Попробуйте позже.',
+                'uz-UZ': "❌ Xatolik yuz berdi. Keyinroq urinib ko'ring."
+            }
+        };
+
+        if (key === 'success') {
+            const studentLine = data.studentName
+                ? (lang === 'uz-UZ' ? `\n(Talaba: ${data.studentName})` : `\n(По данным студента: ${data.studentName})`)
+                : '';
+
+            return lang === 'uz-UZ'
+                ? `✅ <b>Muvaffaqiyatli!</b>\n\n<b>"${data.groupName}"</b> guruhi shu chatga bog'landi.${studentLine}`
+                : `✅ <b>Успешно!</b>\n\nГруппа <b>"${data.groupName}"</b> привязана к этому чату.${studentLine}`;
+        }
+
+        if (key === 'unbound') {
+            return lang === 'uz-UZ'
+                ? `✅ <b>"${data.groupName}"</b> guruhi uzildi.`
+                : `✅ Группа "${data.groupName}" успешно отвязана.`;
+        }
+
+        return texts[key]?.[lang] || texts[key]?.['ru-RU'] || key;
+    }
+
+    function getGroupCommandError(language, error, fallbackKey = 'genericGroupError') {
+        const status = error?.response?.status;
+        const message = String(error?.response?.data?.message || error?.message || '');
+
+        if (status === 404 && message === 'user_not_found') {
+            return getGroupBindText(language, 'userNotFound');
+        }
+        if (status === 404) {
+            return getGroupBindText(language, 'groupNotBound');
+        }
+        if (status === 409) {
+            return getGroupBindText(language, 'groupAlreadyBound');
+        }
+        if (status === 400 && message.toLowerCase().includes('group')) {
+            return getGroupBindText(language, 'noGroupInProfile');
+        }
+
+        return getGroupBindText(language, fallbackKey);
     }
 
     async function getLocalProfile(chatId) {
@@ -353,9 +466,27 @@ function startBot() {
             haystack.includes('message identifier is not specified');
     }
 
-    async function handleScheduleRequest(chatId, dateObject, messageIdToEdit = null, isGroup = false) {
-        // Для групп используем русский по умолчанию, так как пользователя может не быть в базе
-        const language = isGroup ? 'ru-RU' : await getUserLanguage(chatId);
+    async function markGroupLinkHintShown(chatId) {
+        try {
+            await axios.post(`${apiUrl}/api/bot/group-link-hint-shown`, {
+                chatId: chatId.toString()
+            }, { headers: { 'x-bot-secret': botApiSecret } });
+        } catch (error) {
+            console.error('Failed to mark group link hint as shown:', error.message);
+        }
+    }
+
+    async function sendGroupLinkHintIfNeeded(chatId, language, profileData, shouldShow) {
+        if (!shouldShow || !profileData || profileData.role !== 'student' || profileData.groupLinkHintShown) {
+            return;
+        }
+
+        await bot.sendMessage(chatId, i18n.t(language, 'groupLinkHint'), { parse_mode: 'HTML' });
+        await markGroupLinkHintShown(chatId);
+    }
+
+    async function handleScheduleRequest(chatId, dateObject, messageIdToEdit = null, isGroup = false, showGroupLinkHint = false) {
+        let language = isGroup ? await getGroupLanguage(chatId) : await getUserLanguage(chatId);
         let loadingMsg;
 
         if (!messageIdToEdit) {
@@ -365,6 +496,7 @@ function startBot() {
         try {
             let scheduleData;
             let groupName = '';
+            let profileData = null;
 
             if (isGroup) {
                 // Для групп используем специальный эндпоинт
@@ -373,6 +505,7 @@ function startBot() {
                 });
                 scheduleData = data;
                 groupName = data.groupName || '';
+                language = normalizeBotLanguage(data.language, language);
             } else {
                 // Для личных чатов используем обычный эндпоинт
                 const { data } = await axios.get(`${apiUrl}/api/bot/schedule/${chatId}`, {
@@ -382,10 +515,11 @@ function startBot() {
 
                 // Получаем профиль для имени группы
                 try {
-                    const { data: profileData } = await axios.get(`${apiUrl}/api/bot/me/${chatId}`, {
+                    const { data } = await axios.get(`${apiUrl}/api/bot/me/${chatId}`, {
                         headers: { 'x-bot-secret': botApiSecret }
                     });
-                    groupName = profileData?.data?.group || '';
+                    profileData = data?.data || null;
+                    groupName = profileData?.group || '';
                 } catch (e) {
                     // Игнорируем ошибку получения профиля
                 }
@@ -422,11 +556,18 @@ function startBot() {
                     parse_mode: 'HTML',
                     reply_markup: replyMarkup.reply_markup
                 });
+                await sendGroupLinkHintIfNeeded(chatId, language, profileData, showGroupLinkHint && !isGroup);
             }
 
         } catch (error) {
-            console.error(error);
-            const errorText = i18n.t(language, 'scheduleError');
+            const isGroupNotBound = isGroup && error.response?.status === 404;
+            if (!isGroupNotBound) {
+                console.error(error);
+            }
+
+            const errorText = isGroupNotBound
+                ? getGroupBindText(language, 'groupNotBound')
+                : i18n.t(language, 'scheduleError');
             if (loadingMsg) await bot.deleteMessage(chatId, loadingMsg.message_id).catch(() => { });
 
             if (!messageIdToEdit) {
@@ -441,7 +582,7 @@ function startBot() {
     bot.onText(/(📚 Уроки|📚 Darslar)/, (msg) => {
         const today = new Date();
         const isGroup = ['group', 'supergroup'].includes(msg.chat.type);
-        handleScheduleRequest(msg.chat.id, today, null, isGroup);
+        handleScheduleRequest(msg.chat.id, today, null, isGroup, true);
     });
 
     // 2. Кнопка "🚫 Прогулы" / "🚫 Qoldirishlar"
@@ -646,7 +787,7 @@ function startBot() {
             `🕖 7:00 — bugungi jadval\n\n` +
             `🌙 19:00 — ertangi jadval\n\n` +
             `📚 Guruh chatlari uchun:\n\n` +
-            `Administrator chatni akademik guruhga bog'lashi mumkin\n` +
+            `Ro'yxatdan o'tgan istalgan talaba chatni akademik guruhga bog'lashi mumkin\n` +
             `buyruq bilan:\n\n` +
             `/bind_me\n\n` +
             `Misol:\n\n` +
@@ -658,7 +799,7 @@ function startBot() {
             `🕖 7:00 — расписание на сегодня\n\n` +
             `🌙 19:00 — расписание на завтра\n\n` +
             `📚 Для групповых чатов:\n\n` +
-            `Администратор может привязать чат к академической группе\n` +
+            `Любой зарегистрированный студент может привязать чат к академической группе\n` +
             `командой:\n\n` +
             `/bind_me\n\n` +
             `Пример:\n\n` +
@@ -735,7 +876,7 @@ function startBot() {
         const ADMIN_ID = process.env.ADMIN_ID; // Получаем ID из .env
 
         if (msg.chat.type !== 'private') {
-            const language = await getUserLanguage(chatId);
+            const language = await getGroupLanguage(chatId);
             const flow = resolveStartFlow({ chatType: msg.chat.type, language });
             return bot.sendMessage(chatId, i18n.t(flow.language, 'helloGroup'));
         }
@@ -840,19 +981,14 @@ function startBot() {
     bot.onText(/\/bind_me/, async (msg) => {
         const groupChatId = msg.chat.id;
         const userTelegramId = msg.from.id;
+        const language = await getStoredLanguage(userTelegramId, DEFAULT_GROUP_LANGUAGE);
 
         // Работает только в группах
         if (!['group', 'supergroup'].includes(msg.chat.type)) {
-            return bot.sendMessage(groupChatId, 'Эта команда работает только в группах.');
+            return bot.sendMessage(groupChatId, getGroupBindText(language, 'onlyGroup'));
         }
 
-        // Проверяем права (опционально, можно разрешить всем студентам, но лучше админам)
         try {
-            const member = await bot.getChatMember(groupChatId, userTelegramId);
-            if (!['creator', 'administrator'].includes(member.status)) {
-                return bot.sendMessage(groupChatId, 'Только администраторы могут привязывать группу.');
-            }
-
             const res = await axios.post(`${apiUrl}/api/bot/bind-by-user`, {
                 groupChatId: groupChatId.toString(),
                 userTelegramId: userTelegramId.toString()
@@ -861,17 +997,17 @@ function startBot() {
             });
 
             if (res.data.success) {
-                bot.sendMessage(groupChatId, `✅ <b>Успешно!</b>\n\nГруппа <b>"${res.data.groupName}"</b> привязана к этому чату.\n(По данным студента: ${res.data.studentName})`, { parse_mode: 'HTML' });
+                const groupLanguage = normalizeBotLanguage(res.data.language, language);
+                try {
+                    await setGroupChatCommands(groupChatId, groupLanguage);
+                } catch (commandError) {
+                    console.error('Failed to update group commands:', commandError.message);
+                }
+                bot.sendMessage(groupChatId, getGroupBindText(groupLanguage, 'success', res.data), { parse_mode: 'HTML' });
             }
 
         } catch (e) {
-            if (e.response?.status === 404 && e.response?.data?.message === 'user_not_found') {
-                // Если юзер не найден в боте
-                return bot.sendMessage(groupChatId, `❌ Вы не зарегистрированы в боте.\n\nЗайдите в ЛС к @HEMISnotify_bot, нажмите /start и войдите в систему, затем вернитесь сюда и нажмите /bind_me.`);
-            }
-
-            const errorMsg = e.response?.data?.message || e.message;
-            bot.sendMessage(groupChatId, `❌ Ошибка: ${errorMsg}`);
+            bot.sendMessage(groupChatId, getGroupCommandError(language, e));
         }
     });
 
@@ -1048,9 +1184,9 @@ function startBot() {
                 try {
                     const { data: scheduleData } = await axios.get(`${apiUrl}/api/bot/schedule/group/${encodeURIComponent(group.groupName)}`, { headers: { 'x-bot-secret': botApiSecret } });
                     const daySchedule = filterScheduleByDate(scheduleData.schedule, dateObject);
-                    // Для групповых рассылок используем русский язык по умолчанию
-                    const msg = formatSchedule(daySchedule, 'student', dateObject, group.groupName, 'ru-RU');
-                    const replyMarkup = keyboards.getSchedulePagination(dateObject, 'ru-RU');
+                    const language = normalizeBotLanguage(scheduleData.language || group.language, DEFAULT_GROUP_LANGUAGE);
+                    const msg = formatSchedule(daySchedule, 'student', dateObject, group.groupName, language);
+                    const replyMarkup = keyboards.getSchedulePagination(dateObject, language);
                     const sent = await sendSafe(group.telegramChatId, msg, {
                         parse_mode: 'HTML',
                         reply_markup: replyMarkup.reply_markup
@@ -1123,13 +1259,7 @@ function startBot() {
         const chatId = msg.chat.id;
         if (!['group', 'supergroup'].includes(msg.chat.type)) return;
 
-        // Для групп используем язык по умолчанию (русский), так как пользователя может не быть в базе
-        let language = 'ru-RU';
-        try {
-            language = await getUserLanguage(chatId);
-        } catch (e) {
-            // Если не удалось получить язык, используем русский по умолчанию
-        }
+        const language = await getStoredLanguage(msg.from.id, DEFAULT_GROUP_LANGUAGE);
 
         try {
             const member = await bot.getChatMember(chatId, msg.from.id);
@@ -1138,16 +1268,24 @@ function startBot() {
             }
             const res = await axios.post(`${apiUrl}/api/bot/bind-group`, {
                 groupName: match[1].trim(),
-                chatId: chatId.toString()
+                chatId: chatId.toString(),
+                language
             }, {
                 headers: { 'x-bot-secret': botApiSecret }
             });
             if (res.data.success) {
-                bot.sendMessage(chatId, `✅ ${res.data.message}`);
+                const groupLanguage = normalizeBotLanguage(res.data.language, language);
+                try {
+                    await setGroupChatCommands(chatId, groupLanguage);
+                } catch (commandError) {
+                    console.error('Failed to update group commands:', commandError.message);
+                }
+                bot.sendMessage(chatId, getGroupBindText(groupLanguage, 'success', {
+                    groupName: res.data.groupName || match[1].trim()
+                }), { parse_mode: 'HTML' });
             }
         } catch (e) {
-            const errorMsg = e.response?.data?.message || e.message;
-            bot.sendMessage(chatId, `${i18n.t(language, 'error')}: ${errorMsg}`);
+            bot.sendMessage(chatId, getGroupCommandError(language, e));
         }
     });
 
@@ -1158,9 +1296,7 @@ function startBot() {
         // Работает только в группах
         if (!['group', 'supergroup'].includes(msg.chat.type)) return;
 
-        // Получаем язык (для ответов)
-        let language = 'ru-RU';
-        try { language = await getUserLanguage(chatId); } catch (e) { }
+        const language = await getGroupLanguage(chatId);
 
         try {
             // Проверка прав админа
@@ -1177,12 +1313,13 @@ function startBot() {
             });
 
             if (res.data.success) {
-                bot.sendMessage(chatId, `✅ ${res.data.message}`);
+                bot.sendMessage(chatId, getGroupBindText(language, 'unbound', {
+                    groupName: res.data.groupName
+                }), { parse_mode: 'HTML' });
             }
 
         } catch (e) {
-            const errorMsg = e.response?.data?.message || e.message;
-            bot.sendMessage(chatId, `${i18n.t(language, 'error')}: ${errorMsg}`);
+            bot.sendMessage(chatId, getGroupCommandError(language, e));
         }
     });
 }
