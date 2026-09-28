@@ -133,8 +133,9 @@ router.post('/register', protectBotRoute, async (req, res) => {
 
         // --- НОВАЯ ЛОГИКА: Сразу получаем текущие прогулы, чтобы запомнить их ---
         let initialAbsentHours = 0;
-        let user = await User.findOne({ telegramChatId: chatId });
-        const userLanguage = user?.language || 'ru-RU'; // Используем сохраненный язык или по умолчанию русский
+        let userByChat = await User.findOne({ telegramChatId: chatId });
+        let userByLogin = await User.findOne({ hemisLogin });
+        const userLanguage = userByChat?.language || userByLogin?.language || 'ru-RU';
 
         let initialSemesterCode = null;
 
@@ -150,13 +151,22 @@ router.post('/register', protectBotRoute, async (req, res) => {
         }
         // ------------------------------------------------------------------------
 
+        let user = userByLogin || userByChat;
+
+        if (userByLogin && userByChat && userByLogin._id.toString() !== userByChat._id.toString()) {
+            if (userByChat.language && !userByLogin.language) {
+                userByLogin.language = userByChat.language;
+            }
+            await User.deleteOne({ _id: userByChat._id });
+            user = userByLogin;
+        }
+
         if (user) {
-            // Проверяем, это временный пользователь (созданный при выборе языка) или уже зарегистрированный
-            const isTempUser = user.hemisLogin && user.hemisLogin.startsWith('temp_');
-            const existingLanguage = user.language; // Сохраняем язык
+            const existingLanguage = userByChat?.language || user.language;
 
             user.hemisLogin = hemisLogin;
             user.hemisPassword = encryptedPassword;
+            user.telegramChatId = chatId;
             user.hemisToken = hemisToken;
             user.hemisRateLimitedUntil = null;
             user.fullName = profileData.fullName;
@@ -166,12 +176,10 @@ router.post('/register', protectBotRoute, async (req, res) => {
             user.lastSemesterCode = initialSemesterCode;
             user.groupLinkHintShown = false;
 
-            // Сохраняем язык, если он был установлен
             if (existingLanguage) {
                 user.language = existingLanguage;
             }
         } else {
-            // Пользователя нет - создаем нового
             user = new User({
                 hemisLogin,
                 hemisPassword: encryptedPassword,
@@ -184,7 +192,6 @@ router.post('/register', protectBotRoute, async (req, res) => {
                 lastKnownAbsentHours: initialAbsentHours,
                 lastSemesterCode: initialSemesterCode,
                 groupLinkHintShown: false
-                // Язык по умолчанию null - будет выбран при первом запуске
             });
         }
 

@@ -128,6 +128,20 @@ module.exports = {
 
     // ... остальной код ...
 
+    getLoginRetryKeyboard: (language = 'ru-RU') => {
+        const isUz = language === 'uz-UZ';
+        return {
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        { text: isUz ? '🔄 Loginni almashtirish' : '🔄 Сменить логин', callback_data: 'login_change_user' },
+                        { text: isUz ? '❌ Bekor qilish' : '❌ Отмена', callback_data: 'login_cancel' }
+                    ]
+                ]
+            }
+        };
+    },
+
     getGuestMenu: (language = 'ru-RU') => {
         return {
             reply_markup: {

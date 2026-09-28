@@ -138,6 +138,21 @@ describe('hemisService', () => {
         await expect(hemisService.getCurrentSemesterFromList('token')).resolves.toBe('12');
     });
 
+    test('getCurrentSemesterFromList handles multiple current semesters by preferring active week', async () => {
+        global.fetch.mockResolvedValue({
+            status: 200,
+            json: async () => ({
+                success: true,
+                data: [
+                    { code: '14', current: true, weeks: [{ current: false }] },
+                    { code: '15', current: true, weeks: [{ current: true }] }
+                ]
+            })
+        });
+
+        await expect(hemisService.getCurrentSemesterFromList('token')).resolves.toBe('15');
+    });
+
     test('getCurrentSemesterFromList falls back to semester with current week then to last semester', async () => {
         global.fetch
             .mockResolvedValueOnce({
@@ -185,22 +200,51 @@ describe('hemisService', () => {
         await expect(hemisService.getCurrentSemesterFromList('token')).resolves.toBeNull();
     });
 
-    test('getCurrentSemester falls back to account profile when semesters list is unavailable', async () => {
+    test('getCurrentSemester returns profile semester immediately without semesters list fetch', async () => {
+        global.fetch.mockResolvedValueOnce({
+            status: 200,
+            json: async () => ({
+                success: true,
+                data: {
+                    semester: { code: '15' }
+                }
+            })
+        });
+
+        await expect(hemisService.getCurrentSemester('token')).resolves.toBe('15');
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    test('getCurrentSemester falls back to semesters list when profile is unavailable', async () => {
         global.fetch
             .mockResolvedValueOnce({ status: 500, json: async () => ({}) })
             .mockResolvedValueOnce({
                 status: 200,
                 json: async () => ({
-                    data: {
-                        semester: { code: 'SPRING-2026' }
-                    }
+                    success: true,
+                    data: [{ code: 'SPRING-2026', current: true }]
                 })
             });
 
         await expect(hemisService.getCurrentSemester('token')).resolves.toBe('SPRING-2026');
+        expect(global.fetch).toHaveBeenCalledTimes(2);
     });
 
-    test('getCurrentSemester returns null when profile lookup fails too', async () => {
+    test('getCurrentSemester falls back to semesters list when profile has no semester', async () => {
+        global.fetch
+            .mockResolvedValueOnce({ status: 200, json: async () => ({ data: {} }) })
+            .mockResolvedValueOnce({
+                status: 200,
+                json: async () => ({
+                    success: true,
+                    data: [{ code: '16', current: true }]
+                })
+            });
+
+        await expect(hemisService.getCurrentSemester('token')).resolves.toBe('16');
+    });
+
+    test('getCurrentSemester returns null when profile and semesters list both fail', async () => {
         global.fetch
             .mockResolvedValueOnce({ status: 500, json: async () => ({}) })
             .mockRejectedValueOnce(new Error('network'));
@@ -208,25 +252,12 @@ describe('hemisService', () => {
         await expect(hemisService.getCurrentSemester('token')).resolves.toBeNull();
     });
 
-    test('getCurrentSemester returns null when profile endpoint responds with non-200', async () => {
+    test('getCurrentSemester returns null when profile fetch throws and semesters list returns null', async () => {
         global.fetch
-            .mockResolvedValueOnce({ status: 500, json: async () => ({}) })
-            .mockResolvedValueOnce({ status: 403, json: async () => ({}) });
+            .mockRejectedValueOnce(new Error('network'))
+            .mockResolvedValueOnce({ status: 404, json: async () => ({}) });
 
         await expect(hemisService.getCurrentSemester('token', '')).resolves.toBeNull();
-    });
-
-    test('getCurrentSemester returns list result immediately without profile fallback fetch', async () => {
-        global.fetch.mockResolvedValue({
-            status: 200,
-            json: async () => ({
-                success: true,
-                data: [{ code: 'SPRING-2026', current: true }]
-            })
-        });
-
-        await expect(hemisService.getCurrentSemester('token')).resolves.toBe('SPRING-2026');
-        expect(global.fetch).toHaveBeenCalledTimes(1);
     });
 
     test('getCurrentSemesterFromList returns null when semesters payload is an empty array', async () => {

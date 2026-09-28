@@ -1,4 +1,4 @@
-﻿// TelegramBot/bot.js
+// TelegramBot/bot.js
 
 require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
@@ -650,6 +650,20 @@ function startBot() {
                 parse_mode: 'HTML',
                 ...keyboards.removeKeyboard
             });
+        } else if (data === 'login_change_user') {
+            await bot.answerCallbackQuery(query.id);
+            const language = await getUserLanguage(chatId);
+            userStates[chatId] = { state: 'awaiting_hemis_login', ts: Date.now() };
+            await bot.sendMessage(chatId, i18n.t(language, 'enterHemisLogin'), {
+                parse_mode: 'HTML',
+                ...keyboards.removeKeyboard
+            });
+        } else if (data === 'login_cancel') {
+            await bot.answerCallbackQuery(query.id);
+            delete userStates[chatId];
+            const language = await getUserLanguage(chatId);
+            const cancelMsg = language === 'uz-UZ' ? '❌ Tizimga kirish bekor qilindi.' : '❌ Вход отменен.';
+            await bot.sendMessage(chatId, cancelMsg, keyboards.getGuestMenu(language));
         }
     });
 
@@ -1091,13 +1105,29 @@ function startBot() {
                     bot.sendMessage(chatId, `${i18n.t(language, 'accountLinked')}\n\n${i18n.t(language, 'selectAction')}`, getMenuKeyboard(chatId, language));
                 }
             } catch (error) {
+                console.error('Bot registration error:', error.response?.data || error.message);
                 bot.deleteMessage(chatId, loading.message_id).catch(() => { });
-                const msgErr = error.response?.status === 401
-                    ? i18n.t(language, 'wrongCredentials')
-                    : error.response?.status === 429
+                if (error.response?.status === 401) {
+                    userStates[chatId] = {
+                        state: 'awaiting_hemis_password',
+                        hemisLogin,
+                        ts: Date.now()
+                    };
+                    const isUz = language === 'uz-UZ';
+                    const retryMsg = isUz
+                        ? `❌ <b>${hemisLogin}</b> uchun login yoki parol noto‘g‘ri.\n\n🔑 Parolni qaytadan yuboring yoki amalni tanlang:`
+                        : `❌ Неверный логин или пароль для <b>${hemisLogin}</b>.\n\n🔑 Введите пароль еще раз или выберите действие:`;
+                    bot.sendMessage(chatId, retryMsg, {
+                        parse_mode: 'HTML',
+                        ...keyboards.getLoginRetryKeyboard(language)
+                    });
+                } else {
+                    delete userStates[chatId];
+                    const msgErr = error.response?.status === 429
                         ? i18n.t(language, 'hemisRateLimited')
                         : i18n.t(language, 'serverError');
-                bot.sendMessage(chatId, `${msgErr} ${i18n.t(language, 'tryAgain')}.`, keyboards.getGuestMenu(language));
+                    bot.sendMessage(chatId, `${msgErr} ${i18n.t(language, 'tryAgain')}.`, keyboards.getGuestMenu(language));
+                }
             }
         }
     });

@@ -79,11 +79,7 @@ async function performHemisLogin(hemisLogin, hemisPassword) {
 }
 
 async function getCurrentSemester(hemisToken, language = 'ru-RU') {
-    const listResult = await getCurrentSemesterFromList(hemisToken, language);
-    if (listResult) {
-        return listResult;
-    }
-
+    // 1. Приоритет: профиль студента (/v1/account/me) — точный персональный семестр
     const langParam = language ? `?l=${language}` : '';
     const url = `${process.env.HEMIS_API_BASE}/v1/account/me${langParam}`;
 
@@ -92,16 +88,19 @@ async function getCurrentSemester(hemisToken, language = 'ru-RU') {
             method: 'GET',
             headers: buildHeaders(hemisToken)
         });
-        if (response.status !== 200) {
-            return null;
+        if (response.status === 200) {
+            const data = await response.json();
+            const semesterCode = data?.data?.semester?.code;
+            if (semesterCode) {
+                return String(semesterCode);
+            }
         }
-
-        const data = await response.json();
-        return data?.data?.semester?.code || null;
     } catch (error) {
         console.error('Failed to fetch user profile data:', error);
-        return null;
     }
+
+    // 2. Fallback: список семестров (/v1/education/semesters)
+    return await getCurrentSemesterFromList(hemisToken, language);
 }
 
 async function getCurrentSemesterFromList(hemisToken, language = 'ru-RU') {
@@ -118,27 +117,40 @@ async function getCurrentSemesterFromList(hemisToken, language = 'ru-RU') {
         }
 
         const data = await response.json();
-        if (!data.success || !Array.isArray(data.data)) {
+        if (!data.success || !Array.isArray(data.data) || data.data.length === 0) {
             return null;
         }
 
-        const currentSemester = data.data.find((semester) => semester.current === true);
-        if (currentSemester) {
-            console.log(`Found current semester from list: code=${currentSemester.code}, name=${currentSemester.name}`);
-            return currentSemester.code;
-        }
-
+        // 1. Семестр с текущей активной учебной неделей
         for (const semester of data.data) {
             if (semester.weeks && semester.weeks.some((week) => week.current === true)) {
                 console.log(`Found semester with current week: code=${semester.code}, name=${semester.name}`);
-                return semester.code;
+                return String(semester.code);
             }
         }
 
+        // 2. Семестр с current: true в активном учебном году
+        const currentYearSemester = data.data.find(
+            (semester) => semester.current === true && semester.education_year?.current === true
+        );
+        if (currentYearSemester) {
+            console.log(`Found current semester in active education year: code=${currentYearSemester.code}, name=${currentYearSemester.name}`);
+            return String(currentYearSemester.code);
+        }
+
+        // 3. Последний семестр с current: true (если в HEMIS их несколько)
+        const currentSemesters = data.data.filter((semester) => semester.current === true);
+        if (currentSemesters.length > 0) {
+            const latestCurrent = currentSemesters[currentSemesters.length - 1];
+            console.log(`Found latest semester with current=true: code=${latestCurrent.code}, name=${latestCurrent.name}`);
+            return String(latestCurrent.code);
+        }
+
+        // 4. Последний семестр в списке
         const lastSemester = data.data[data.data.length - 1];
         if (lastSemester) {
             console.log(`No current semester found, using last: code=${lastSemester.code}, name=${lastSemester.name}`);
-            return lastSemester.code;
+            return String(lastSemester.code);
         }
 
         return null;
