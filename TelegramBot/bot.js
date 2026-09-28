@@ -116,6 +116,8 @@ function startBot() {
     const USER_STATE_TTL_MS = 60 * 60 * 1000; // 1 час
     const nbCheckCronExpression = process.env.NB_CHECK_CRON || '*/10 8-22 * * *';
     let isNbCheckInProgress = false;
+    let nbCheckStartedAt = 0;
+    const NB_CHECK_STALE_LOCK_MS = 5 * 60 * 1000; // 5 минут максимальный таймаут блокировки
 
     setInterval(() => {
         const now = Date.now();
@@ -1159,15 +1161,22 @@ function startBot() {
     // --- ПРОВЕРКА НОВЫХ NB (Каждые 15 минут с 08:00 до 22:00) ---
     cron.schedule(nbCheckCronExpression, async () => {
         if (isNbCheckInProgress) {
-            console.log('NB check skipped: previous run is still in progress.');
-            return;
+            if (Date.now() - nbCheckStartedAt > NB_CHECK_STALE_LOCK_MS) {
+                console.warn('NB check lock was stale (>5m), releasing lock.');
+                isNbCheckInProgress = false;
+            } else {
+                console.log('NB check skipped: previous run is still in progress.');
+                return;
+            }
         }
 
         isNbCheckInProgress = true;
+        nbCheckStartedAt = Date.now();
         try {
             // Запрашиваем у бэкенда список тех, у кого новые NB
             const response = await axios.post(`${apiUrl}/api/bot/check-new-absences`, {}, {
-                headers: { 'x-bot-secret': botApiSecret }
+                headers: { 'x-bot-secret': botApiSecret },
+                timeout: 120000
             });
 
             const notifications = response.data.notifications;

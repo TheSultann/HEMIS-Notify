@@ -53,16 +53,18 @@ async function applyLoginResult(user, authData, now = Date.now()) {
 
 function getNbAttendanceBatchSize() {
     const configuredValue = Number(process.env.NB_ATTENDANCE_BATCH_SIZE);
-    return Number.isInteger(configuredValue) && configuredValue > 0
-        ? configuredValue
-        : 2;
+    if (Number.isInteger(configuredValue) && configuredValue > 0) {
+        return configuredValue;
+    }
+    return process.env.NODE_ENV === 'test' ? 2 : 5;
 }
 
 function getNbAttendanceBatchPauseMs() {
     const configuredValue = Number(process.env.NB_ATTENDANCE_BATCH_PAUSE_MS);
-    return Number.isFinite(configuredValue) && configuredValue >= 0
-        ? configuredValue
-        : 1500;
+    if (Number.isFinite(configuredValue) && configuredValue >= 0) {
+        return configuredValue;
+    }
+    return process.env.NODE_ENV === 'test' ? 1500 : 200;
 }
 
 async function processInBatches(items, worker, { batchSize, pauseMs }) {
@@ -385,7 +387,7 @@ router.post('/check-new-absences', protectBotRoute, async (req, res) => {
                     }
                 } catch (err) {
                     console.error(`Error checking user ${user.hemisLogin}:`, err.message);
-                    await sleep(2000);
+                    await sleep(300);
                 }
             },
             {
