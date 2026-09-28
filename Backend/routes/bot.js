@@ -228,14 +228,16 @@ router.post('/bind-group', protectBotRoute, async (req, res) => {
             normalizeBotLanguage(studentInGroup.language, DEFAULT_GROUP_LANGUAGE)
         );
         let group = await Group.findOne({ telegramChatId: chatId });
+        const existingGroupByName = await Group.findOne({ groupName });
+
+        if (existingGroupByName && existingGroupByName.telegramChatId !== chatId) {
+            return res.status(409).json({ message: `Группа "${groupName}" уже привязана к другому чату.` });
+        }
+
         if (group) {
             group.groupName = groupName;
             group.language = groupLanguage;
         } else {
-            const existingGroupByName = await Group.findOne({ groupName });
-            if (existingGroupByName) {
-                return res.status(409).json({ message: `Группа "${groupName}" уже привязана к другому чату.` });
-            }
             group = new Group({ groupName, telegramChatId: chatId, language: groupLanguage });
         }
 
@@ -980,17 +982,18 @@ router.post('/bind-by-user', protectBotRoute, async (req, res) => {
         const groupName = student.group;
         const groupLanguage = normalizeBotLanguage(student.language, DEFAULT_GROUP_LANGUAGE);
 
-        // 2. Привязываем группу (копируем логику из bind-group)
+        // 2. Привязываем группу
         let group = await Group.findOne({ telegramChatId: groupChatId });
+        const existingGroupByName = await Group.findOne({ groupName });
+
+        if (existingGroupByName && existingGroupByName.telegramChatId !== groupChatId) {
+            return res.status(409).json({ message: `Группа "${groupName}" уже привязана к другому чату.` });
+        }
+
         if (group) {
             group.groupName = groupName;
             group.language = groupLanguage;
         } else {
-            // Проверяем, не занята ли группа другим чатом
-            const existing = await Group.findOne({ groupName });
-            if (existing) {
-                return res.status(409).json({ message: `Группа "${groupName}" уже привязана к другому чату.` });
-            }
             group = new Group({ groupName, telegramChatId: groupChatId, language: groupLanguage });
         }
 
@@ -999,6 +1002,9 @@ router.post('/bind-by-user', protectBotRoute, async (req, res) => {
         res.json({ success: true, groupName: groupName, studentName: student.fullName, language: groupLanguage });
 
     } catch (error) {
+        if (error.code === 11000) {
+            return res.status(409).json({ message: `Группа "${groupName}" уже привязана к другому чату.` });
+        }
         console.error('Bind by user error:', error);
         res.status(500).json({ message: 'Server error' });
     }
